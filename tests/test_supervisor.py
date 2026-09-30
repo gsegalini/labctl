@@ -85,6 +85,51 @@ def test_stall_fires_once_per_silence(root):
     assert events(d, "stall")[0]["minutes"] == 0.003
 
 
+def test_checkin_fires_once_at_its_time(root):
+    d = make_run(root, "echo a; sleep 1", checkin=[0.005])  # 0.3 s
+    supervise(d)
+    [c, _] = events(d)
+    assert (c["event"], c["source"], c["minutes"]) == ("checkin", "supervisor", 0.005)
+    assert 0.3 <= c["elapsed"] < 0.6
+
+
+def test_checkins_fire_in_order_even_with_continuous_output(root):
+    d = make_run(root, "i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo $i; sleep 0.03; done",
+                 checkin=[0.01, 0.004])  # 0.6 s and 0.24 s; the output never pauses long enough to time out
+    supervise(d)
+    assert [(e["event"], e.get("minutes")) for e in events(d)] == [("checkin", 0.004), ("checkin", 0.01),
+                                                                   ("exit", None)]
+    assert [round(e["elapsed"], 1) >= e["minutes"] * 60 - 0.05 for e in events(d, "checkin")] == [True, True]
+
+
+def test_no_checkin_after_the_command_exits(root):
+    d = make_run(root, "echo quick", checkin=[0.005])
+    supervise(d)
+    assert [e["event"] for e in events(d)] == ["exit"]
+    # a daemonized grandchild keeps the pipe open for the drain second: still no check-in
+    d = make_run(root, "sleep 3 & echo main done", checkin=[0.005])
+    supervise(d)
+    assert [e["event"] for e in events(d)] == ["exit"]
+
+
+def test_checkin_clock_starts_with_the_command_not_the_queue(root):
+    a = make_run(root, "sleep 1", slot="gpu")
+    b = make_run(root, "sleep 0.6", slot="gpu", checkin=[0.005])  # 0.3 s after b starts
+    pa = start(a)
+    wait_until(lambda: status(a).get("state") == "running")
+    pb = start(b)
+    assert pa.wait(timeout=10) == 0 and pb.wait(timeout=10) == 0
+    [c] = events(b, "checkin")
+    assert c["time"] >= status(b)["started"] >= status(a)["finished"]
+    assert 0.3 <= c["elapsed"] < 0.6
+
+
+def test_checkin_and_stall_due_together(root):
+    d = make_run(root, "echo a; sleep 1", stall=0.005, checkin=[0.005])
+    supervise(d)
+    assert sorted(e["event"] for e in events(d)) == ["checkin", "exit", "stall"]
+
+
 def test_slot_runs_serially(root):
     a = make_run(root, "echo a; sleep 0.6", slot="gpu")
     b = make_run(root, "echo b; sleep 0.1", slot="gpu")
@@ -161,6 +206,13 @@ def test_format_wake(root):
     assert text[1:] == [f"  line {i}" for i in range(10, 50)]
     stall = runs.append_event(d, "stall", minutes=0.5)
     assert "event=stall minutes=0.5 " in wake.header(stall)
+    checkin = runs.append_event(d, "checkin", minutes=5.0, elapsed=300.2)
+    assert wake.format_wake(d, checkin).splitlines()[0] == (
+        f"[labctl wake] source=supervisor run={d.name} event=checkin minutes=5 seq={checkin['seq']} "
+        f"time={checkin['time']}")
+    assert wake.format_wake(d, checkin).splitlines()[-1] == "  line 49"  # followed by the log tail
+    fix = runs.append_event(d, "fix_request", source="experimenter", message="wrong output")
+    assert wake.header(fix).startswith(f"[labctl wake] source=experimenter run={d.name} event=fix_request seq=")
     other = runs.append_event(d, "note", source="experimenter", text="look")
     assert wake.header(other).startswith(f"[labctl wake] source=experimenter run={d.name} event=note text=look ")
 

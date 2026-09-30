@@ -32,6 +32,8 @@ def cmd_run(args) -> int:
             re.compile(p)
         except re.error as e:
             sys.exit(f"labctl run: bad --wake-on regex {p!r}: {e}")
+    if any(m < 0 for m in args.checkin):
+        sys.exit("labctl run: --checkin MINUTES must not be negative")
     harness = args.harness or os.environ.get("LABCTL_HARNESS")
     if args.brief and harness not in HARNESSES:
         sys.exit(f"labctl run: --brief starts an experimenter, so it needs --harness or $LABCTL_HARNESS "
@@ -41,7 +43,7 @@ def cmd_run(args) -> int:
     try:
         sessions = agents.new_sessions(harness if args.brief else None, args.manager)
         run_dir = runs.create_run(runs.runs_dir(), command, cwd=Path.cwd(), name=args.name,
-                                  slot=args.slot, wake_on=args.wake_on, stall=args.stall,
+                                  slot=args.slot, wake_on=args.wake_on, stall=args.stall, checkin=args.checkin,
                                   check=args.check, brief=args.brief, env=os.environ, sessions=sessions)
     except FileExistsError:
         sys.exit(f"labctl run: run {args.name!r} already exists")
@@ -93,8 +95,6 @@ def _age(created: str | None) -> str:
     return f"{int(s)}s"
 
 
-def cmd_status(args) -> int:
-    if args.id is None:
 def _table(rows: list[list[str]], indent: str = "") -> None:
     """Left-aligned columns, the last one unpadded."""
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
@@ -111,6 +111,8 @@ def _what(event: dict) -> str:
     return text if len(text) <= 120 else text[:117] + "..."
 
 
+def cmd_status(args) -> int:
+    if args.id is None:
         root = runs.runs_dir()
         dirs = [d for d in root.iterdir() if (d / "run.json").exists()] if root.is_dir() else []
         if not dirs:
@@ -214,8 +216,8 @@ def cmd_cancel(args) -> int:
 
 def cmd_escalate(args) -> int:
     d = _run_dir(args.id)
-    ev = wake.emit(d, "escalation", source="experimenter", message=args.m)
-    print(f"escalated {d.name} seq={ev['seq']}")
+    ev = wake.emit(d, "fix_request" if args.fix else "escalation", source="experimenter", message=args.m)
+    print(f"{ev['event']} for {d.name} seq={ev['seq']}")
     return 0
 
 
@@ -257,6 +259,8 @@ def main(argv=None) -> int:
     r.add_argument("--wake-on", action="append", default=[], metavar="REGEX",
                    help="record a match event for log lines matching REGEX (repeatable)")
     r.add_argument("--stall", type=float, metavar="MINUTES", help="record a stall event after this long without output")
+    r.add_argument("--checkin", action="append", type=float, default=[], metavar="MINUTES",
+                   help="record a checkin event this long after the command starts, if still running (repeatable)")
     r.add_argument("--check", metavar="CMD", help="shell command run after exit 0; its exit code decides ok")
     r.add_argument("--brief", metavar="FILE", help="gives the run an experimenter agent; copied to brief.md")
     r.add_argument("--harness", choices=HARNESSES, help="experimenter harness (default: $LABCTL_HARNESS)")
@@ -287,6 +291,7 @@ def main(argv=None) -> int:
 
     e = sub.add_parser("escalate", help="experimenter -> manager: record an escalation")
     e.add_argument("id")
+    e.add_argument("--fix", action="store_true", help="a fix request: a bug in the experiment's code or config")
     e.add_argument("-m", required=True, metavar="TEXT")
     e.set_defaults(func=cmd_escalate)
 

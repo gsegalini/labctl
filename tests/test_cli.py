@@ -85,7 +85,14 @@ def test_run_option_errors(root, tmp_path):
         main(["run", "--brief", str(brief), "--", "true"])
     with pytest.raises(SystemExit, match="HARNESS:SESSION_ID"):
         main(["run", "--manager", "vim:1", "--", "true"])
+    with pytest.raises(SystemExit, match="--checkin MINUTES must not be negative"):
+        main(["run", "--checkin", "-1", "--", "true"])
     assert not root.exists() or not any(root.iterdir())
+
+
+def test_checkin_is_recorded_in_run_json(root):
+    d = make_run(root, "true", checkin=[30, 0.5, 30])
+    assert runs.read_json(d / "run.json")["checkin_minutes"] == [0.5, 30]
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
@@ -109,12 +116,13 @@ def test_end_to_end_with_tmux(root, tmp_path, fake_agents):
         meta = runs.read_json(d / "run.json")
         assert meta["command"] == ["sh", "-c", "echo step 1 $LABCTL_E2E; echo step 2"]
         assert meta["cwd"] == str(tmp_path) and meta["git"] is None
-        # the match woke the experimenter (fake claude, found through the caller's PATH);
-        # the successful exit went to the inbox
-        wait_until(lambda: len(fake_agents()) == 1)
-        [call] = fake_agents()
+        # the match and the successful exit woke the experimenter (fake claude, found through
+        # the caller's PATH); its verdict reached the inbox as the one report of the run
+        wait_until(lambda: (root / "inbox.jsonl").exists())
+        call = fake_agents()[0]
         assert call["argv"][:2] == ["claude", "-p"] and "--session-id" in call["argv"]
         assert call["cwd"] == str(tmp_path)
-        assert "event=exit code=0" in (root / "inbox.jsonl").read_text()
+        [entry] = runs.read_jsonl(root / "inbox.jsonl")
+        assert "event=report code=0 check=none" in entry["text"]
     finally:
         subprocess.run(["tmux", "kill-session", "-t", runs.tmux_session(name)], capture_output=True)

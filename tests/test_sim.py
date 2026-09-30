@@ -43,3 +43,9 @@ def test_stall_and_check_failure(root):
     d2 = make_run(root, f"{sys.executable} {CAMPAIGN} check --out {root.parent / 'out'}")
     supervise(d2)
     assert "incomplete stages: swap" in (d2 / "log").read_text() and status(d2)["state"] == "failed"
+
+
+def test_bad_output_is_caught_by_the_check(root):
+    d = campaign_run(root, "--bad-output-at", "clean")
+    supervise(d)
+    assert "incomplete stages: clean" in (d / "log").read_text() and status(d)["state"] == "failed"

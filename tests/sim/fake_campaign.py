@@ -2,6 +2,7 @@
 
     fake_campaign.py run --out DIR [--steps N] [--duration SECONDS] [--tqdm]
                          [--fail-at STAGE] [--stall-at STAGE SECONDS] [--nan-at STAGE]
+                         [--bad-output-at STAGE]
     fake_campaign.py check --out DIR
 
 `run` goes through the stages clean, dependence, swap, replay. Each prints
@@ -10,7 +11,9 @@ updates, one line per stage) spread over --duration seconds, and writes
 DIR/<stage>/completion.json with "complete": true. Faults are injected halfway
 through a stage: --fail-at prints a traceback ending in
 "ValueError: frozen overlay changed" and exits 1; --stall-at goes silent for
-SECONDS; --nan-at prints a progress line with "loss=nan" and carries on.
+SECONDS; --nan-at prints a progress line with "loss=nan" and carries on;
+--bad-output-at writes that stage's completion.json with "complete": false and
+carries on, like a silent bug.
 `check` (for labctl run --check) exits 0 only if every stage is complete.
 """
 
@@ -47,7 +50,8 @@ def run(args) -> int:
             time.sleep(pause)
         done = Path(args.out) / stage
         done.mkdir(parents=True, exist_ok=True)
-        (done / "completion.json").write_text(json.dumps({"stage": stage, "complete": True, "steps": args.steps}))
+        complete = stage != args.bad_output_at
+        (done / "completion.json").write_text(json.dumps({"stage": stage, "complete": complete, "steps": args.steps}))
     print("campaign done", flush=True)
     return 0
 
@@ -79,6 +83,7 @@ def main(argv=None) -> int:
     r.add_argument("--fail-at", choices=STAGES)
     r.add_argument("--stall-at", nargs=2, metavar=("STAGE", "SECONDS"))
     r.add_argument("--nan-at", choices=STAGES)
+    r.add_argument("--bad-output-at", choices=STAGES)
     c = sub.add_parser("check")
     c.add_argument("--out", required=True)
     args = p.parse_args(argv)

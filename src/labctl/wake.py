@@ -1,9 +1,11 @@
 """Wake messages: formatting, routing, the manager inbox, and handing off delivery.
 
-Routing: successful or cancelled exits, and everything not from the supervisor
-(escalation, report, delivery_failed), go to the manager. Other supervisor
-events (failed exit, match, stall) go to the run's experimenter if it has one,
-else to the manager. Every manager-routed event is appended to
+Routing: cancelled exits, and everything not from the supervisor (escalation,
+fix_request, report, delivery_failed), go to the manager. Other supervisor
+events (exit, match, stall, checkin) go to the run's experimenter if it has one,
+else to the manager. After an experimenter turn on an exit, the manager gets
+exactly one message for it: an escalation or fix request sent during the turn,
+else the experimenter's reply as a report. Every manager-routed event is appended to
 <runs>/inbox.jsonl, whether or not a manager session exists.
 
 A wake is one header line, then indented body lines (the message, or the log
@@ -37,7 +39,7 @@ def summary(event: dict) -> str:
         keys = ["code", "check"] + [k for k in ("cancelled", "signal") if event.get(k)]
     elif kind == "match":
         keys = ["pattern"]
-    elif kind == "stall":
+    elif kind in ("stall", "checkin"):
         keys = ["minutes"]
     else:
         keys = [k for k in event if k not in _BASE]
@@ -68,7 +70,7 @@ def route(run_dir: Path, event: dict) -> str:
     """'experimenter' or 'manager'."""
     if event.get("source") != "supervisor":
         return "manager"
-    if event.get("event") == "exit" and (event.get("ok") or event.get("cancelled")):
+    if event.get("event") == "exit" and event.get("cancelled"):
         return "manager"
     has_experimenter = "experimenter" in runs.read_json(Path(run_dir) / "sessions.json", {})
     return "experimenter" if has_experimenter else "manager"

@@ -29,17 +29,19 @@ def test_routing_table(root, tmp_path):
     with_exp = run_with(root, tmp_path, experimenter="claude", name="with")
     without = run_with(root, tmp_path, name="without")
     rows = [  # (event, fields, route with experimenter, route without)
-        ("exit", {"code": 0, "check": None, "ok": True}, "manager", "manager"),
+        ("exit", {"code": 0, "check": None, "ok": True}, "experimenter", "manager"),
         ("exit", {"code": 1, "check": None, "ok": False}, "experimenter", "manager"),
         ("exit", {"code": 0, "check": "failed", "ok": False}, "experimenter", "manager"),
         ("match", {"pattern": "x", "line": "x"}, "experimenter", "manager"),
         ("stall", {"minutes": 1.0}, "experimenter", "manager"),
+        ("checkin", {"minutes": 1.0, "elapsed": 60.0}, "experimenter", "manager"),
         ("exit", {"code": 143, "check": None, "ok": False, "cancelled": True}, "manager", "manager"),
     ]
     for kind, fields, a, b in rows:
         assert wake.route(with_exp, ev(with_exp, kind, **fields)) == a, (kind, fields)
         assert wake.route(without, ev(without, kind, **fields)) == b, (kind, fields)
-    for kind, source in [("escalation", "experimenter"), ("report", "experimenter"), ("delivery_failed", "labctl")]:
+    for kind, source in [("escalation", "experimenter"), ("fix_request", "experimenter"), ("report", "experimenter"),
+                         ("delivery_failed", "labctl")]:
         assert wake.route(with_exp, ev(with_exp, kind, source=source, message="m")) == "manager"
 
 
@@ -55,7 +57,7 @@ def test_inbox_gets_manager_events_only(root, tmp_path, fake_agents, capsys):
     assert second["text"].splitlines()[1:] == ["  need a decision", "  second line"]
     assert main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "inbox" in out and "  second line" in out
+    assert "  #2  " in out and "r1  escalation: need a decision ..." in out and "second line" not in out
     assert fake_agents() == []
 
 
@@ -77,14 +79,35 @@ def test_wait_without_id_follows_the_inbox(root, tmp_path, capsys):
     assert "inbox=1" in capsys.readouterr().out.splitlines()[0]
 
 
-def test_healthy_run_costs_no_model_calls(root, tmp_path, fake_agents):
-    d = run_with(root, tmp_path, "echo fine", experimenter="claude")
+def test_success_without_brief_costs_no_model_calls(root, tmp_path, fake_agents):
+    d = run_with(root, tmp_path, "echo fine")
     supervise(d)
     time.sleep(0.3)
     assert fake_agents() == []
     [entry] = inbox(root)
     assert "event=exit code=0" in entry["text"]
-    assert agents.load(d)["experimenter"]["started"] is False
+
+
+def test_success_with_brief_is_verified_then_reported_once(root, tmp_path, fake_agents, monkeypatch):
+    monkeypatch.setenv("FAKE_REPLY", "checked out/metrics.json: present, 3 rows")
+    d = run_with(root, tmp_path, "echo fine", experimenter="claude", check="true")
+    supervise(d)
+    wait_until(lambda: inbox(root))
+    [call] = fake_agents()
+    assert "event=exit code=0 check=passed" in call["prompt"]
+    [entry] = inbox(root)
+    assert entry["text"].splitlines() == [entry["text"].splitlines()[0], "  checked out/metrics.json: present, 3 rows"]
+    assert entry["text"].startswith(f"[labctl wake] source=experimenter run={d.name} event=report code=0 check=passed ")
+
+
+def test_success_with_failed_delivery_still_reaches_the_manager(root, tmp_path, fake_agents, monkeypatch):
+    monkeypatch.setenv("FAKE_MODE", "auth")
+    d = run_with(root, tmp_path, "echo fine", experimenter="claude")
+    supervise(d)
+    wait_until(lambda: inbox(root))
+    [entry] = inbox(root)
+    assert "event=delivery_failed" in entry["text"]
+    assert "  [labctl wake] source=supervisor run=" in entry["text"] and "event=exit code=0" in entry["text"]
 
 
 # --- experimenter sessions -------------------------------------------------
@@ -121,13 +144,18 @@ def test_lazy_start_then_resume(root, tmp_path, fake_agents, monkeypatch, h, exp
     assert "event=report" in entry["text"] and "  diagnosis: bad data path" in entry["text"]
 
 
-def test_no_report_when_the_experimenter_escalated(root, tmp_path, fake_agents, monkeypatch):
+@pytest.mark.parametrize("code", [0, 1])
+@pytest.mark.parametrize("fix", [False, True])
+def test_no_report_when_the_experimenter_escalated(root, tmp_path, fake_agents, monkeypatch, code, fix):
     d = run_with(root, tmp_path, experimenter="claude", name="esc2")
     monkeypatch.setenv("FAKE_ESCALATE_RUN", "esc2")
     monkeypatch.setenv("FAKE_ESCALATE", "OOM; need a smaller batch")
-    agents.deliver_turn(d, ev(d, "exit", code=1, check=None, ok=False)["seq"])
-    assert [e["event"] for e in runs.read_events(d)] == ["exit", "escalation"]
-    assert [e["text"].split()[4] for e in inbox(root)] == ["event=escalation"]
+    if fix:
+        monkeypatch.setenv("FAKE_FIX", "1")
+    agents.deliver_turn(d, ev(d, "exit", code=code, check=None, ok=code == 0)["seq"])
+    kind = "fix_request" if fix else "escalation"
+    assert [e["event"] for e in runs.read_events(d)] == ["exit", kind]
+    assert [e["text"].split()[4] for e in inbox(root)] == [f"event={kind}"]
 
 
 def test_dash_leading_brief_starts_fine(root, tmp_path, fake_agents):
@@ -160,6 +188,17 @@ def test_codex_active_writer_falls_back_to_queue(root, tmp_path, fake_agents, mo
 
 
 # --- delivery is detached and serialized -----------------------------------
+
+def test_slow_checkin_delivery_does_not_block_the_run(root, tmp_path, fake_agents, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1.5")
+    d = run_with(root, tmp_path, "sleep 0.4; echo done", experimenter="claude", checkin=[0.002])  # 0.12 s
+    t0 = time.monotonic()
+    supervise(d)
+    assert time.monotonic() - t0 < 1.2
+    assert [e["event"] for e in runs.read_events(d)] == ["checkin", "exit"]
+    wait_until(lambda: fake_agents())
+    assert "event=checkin minutes=0.002 " in fake_agents()[0]["prompt"]
+
 
 def test_slow_agent_does_not_block_the_run(root, tmp_path, fake_agents, monkeypatch):
     monkeypatch.setenv("FAKE_SLEEP", "1.5")
@@ -219,6 +258,23 @@ def test_escalate_wakes_wait_and_manager(root, tmp_path, fake_agents, capsys):
     assert "event=escalation" in entry["text"]
 
 
+def test_fix_request_goes_to_the_manager(root, tmp_path, fake_agents, capsys):
+    fake_agents.add_session("mgr-2")
+    d = run_with(root, tmp_path, experimenter="claude", manager="claude:mgr-2", name="fx")
+    assert main(["escalate", "fx", "--fix", "-m", "clean/completion.json has complete=false\nfix the writer"]) == 0
+    assert capsys.readouterr().out == "fix_request for fx seq=1\n"
+    [e] = runs.read_events(d)
+    assert (e["source"], e["event"]) == ("experimenter", "fix_request")
+    [entry] = inbox(root)
+    assert entry["text"].splitlines() == [
+        f"[labctl wake] source=experimenter run=fx event=fix_request seq=1 inbox=1 time={e['time']}",
+        "  clean/completion.json has complete=false", "  fix the writer"]
+    wait_until(lambda: len(fake_agents()) == 1)
+    assert fake_agents()[0]["argv"][:4] == ["claude", "-p", "--resume", "mgr-2"]
+    assert main(["wait", "fx", "--after", "0"]) == 0
+    assert "event=fix_request" in capsys.readouterr().out
+
+
 def test_sessions_output(root, tmp_path, capsys):
     run_with(root, tmp_path, experimenter="opencode", manager="claude:mgr-1", name="s1")
     run_with(root, tmp_path, name="plain")
@@ -248,7 +304,8 @@ def test_attach(root, tmp_path, fake_agents):
 # --- command builders --------------------------------------------------------
 
 def test_builders_pass_the_message_on_stdin():
-    tools = ["--permission-mode", "dontAsk", "--allowedTools", "Bash(labctl:*)", "Read"]
+    tools = ["--permission-mode", "dontAsk", "--allowedTools", "Bash(labctl:*)", "Bash(nvidia-smi:*)",
+             "Read", "Grep", "Glob"]
     assert harness.start("claude", model="M", role="R", message="MSG", session_id="S") == (
         ["claude", "-p", "--session-id", "S", "--model", "M", "--output-format", "json",
          "--append-system-prompt", "R", *tools], "MSG")
@@ -324,12 +381,13 @@ def test_failed_first_turn_is_attachable_and_status_keeps_the_outcome(root, tmp_
     ev(d, "delivery_failed", source="labctl", role="experimenter", for_seq="1", message="exit 1")
     main(["status"])
     line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("half"))
-    assert "event=exit code=1" in line and "[1 delivery failure]" in line
+    assert "exit code=1" in line and "[1 delivery failure]" in line
 
 
 def test_first_message_names_the_run_and_its_commands(root, tmp_path, fake_agents):
     d = run_with(root, tmp_path, experimenter="opencode", name="cmds")
     agents.deliver_turn(d, ev(d, "stall", minutes=1.0)["seq"])
     prompt = fake_agents()[0]["prompt"]
-    for cmd in ("labctl status cmds", "labctl tail cmds -n 100", "labctl cancel cmds", "labctl escalate cmds -m"):
+    for cmd in ("labctl status cmds", "labctl tail cmds -n 100", "labctl cancel cmds", "labctl escalate cmds -m",
+                "labctl escalate cmds --fix -m"):
         assert cmd in prompt

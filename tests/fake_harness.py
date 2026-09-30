@@ -15,6 +15,7 @@ Environment knobs:
   FAKE_SLEEP  seconds to sleep inside every turn
   FAKE_REPLY  the agent's final reply (default "all good")
   FAKE_ESCALATE_RUN / FAKE_ESCALATE  run `labctl escalate RUN -m TEXT` during the turn
+  FAKE_FIX    if set, that escalation is a fix request (`--fix`)
   FAKE_ATTACH_SLEEP  seconds an interactive (attach) session stays open
 """
 
@@ -121,7 +122,8 @@ def main():
         if mode == "hang":
             time.sleep(3600)
         if os.environ.get("FAKE_ESCALATE"):
-            subprocess.run([sys.executable, "-P", "-m", "labctl", "escalate", os.environ["FAKE_ESCALATE_RUN"],
+            fix = ["--fix"] if os.environ.get("FAKE_FIX") else []
+            subprocess.run([sys.executable, "-P", "-m", "labctl", "escalate", os.environ["FAKE_ESCALATE_RUN"], *fix,
                             "-m", os.environ["FAKE_ESCALATE"]], check=True, stdout=subprocess.DEVNULL)
     if interactive:
         return

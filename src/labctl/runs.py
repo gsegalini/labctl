@@ -76,7 +76,7 @@ def git_info(cwd: Path):
 
 
 def create_run(root: Path, command: list[str], *, cwd: Path, name=None, slot=None,
-               wake_on=(), stall=None, check=None, brief=None, env=None, sessions=None) -> Path:
+               wake_on=(), stall=None, checkin=(), check=None, brief=None, env=None, sessions=None) -> Path:
     """Create the run directory and its initial files. Raises FileExistsError."""
     if brief and Path(brief).stat().st_size > MAX_BRIEF:
         raise ValueError(f"brief {brief} is {Path(brief).stat().st_size} bytes; the limit is {MAX_BRIEF}")
@@ -101,6 +101,7 @@ def create_run(root: Path, command: list[str], *, cwd: Path, name=None, slot=Non
         "slot": slot,
         "wake_on": list(wake_on),
         "stall_minutes": stall,
+        "checkin_minutes": sorted(set(checkin)),
         "check": check,
         "tmux": tmux_session(run_id),
     })

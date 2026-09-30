@@ -197,7 +197,9 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
             rid = run_dir.name
             text = (f"Brief for labctl run {rid}:\n\n{brief}\n\nYour commands for this run (use your shell tool):\n"
                     f"  labctl status {rid}\n  labctl tail {rid} -n 100\n  labctl cancel {rid}\n"
-                    f'  labctl escalate {rid} -m "<what happened, evidence, decision needed>"\n\n{message}')
+                    f'  labctl escalate {rid} -m "<what happened, evidence, decision needed>"\n'
+                    f'  labctl escalate {rid} --fix -m "<observed, evidence, cause, what the fix must achieve>"\n'
+                    f"\n{message}")
             r = _run(run_dir, role, seqs, harness.start(h, model=rec["model"], role=install.load_role(role).prompt,
                                                         message=text, session_id=sid, in_git=in_git), cwd)
         elif r is None:
@@ -226,10 +228,13 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
             text += "\n\nUndelivered wake(s), forwarded to the manager:\n" + message
         wake.emit(run_dir, "delivery_failed", source="labctl", role=role, for_seq=seqs, message=text)
         return
-    if role == "experimenter" and any(e["event"] == "exit" for e in pending):
-        escalated = any(e["event"] == "escalation" and e["seq"] > last_seq for e in runs.read_events(run_dir))
+    exits = [e for e in pending if e["event"] == "exit"]
+    if role == "experimenter" and exits:
+        escalated = any(e["event"] in ("escalation", "fix_request") and e["seq"] > last_seq
+                        for e in runs.read_events(run_dir))
         if not escalated:  # the run is over: its outcome must reach the manager
-            wake.emit(run_dir, "report", source="experimenter", message=reply or _tail(r.stdout + r.stderr))
+            wake.emit(run_dir, "report", source="experimenter", code=exits[-1].get("code"),
+                      check=exits[-1].get("check"), message=reply or _tail(r.stdout + r.stderr))
 
 
 def attach(run_dir: Path, role: str) -> int:

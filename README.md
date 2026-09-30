@@ -3,8 +3,8 @@
 A small CLI for running long experiments so coding agents (Claude Code, Codex,
 opencode) do not have to watch them. `labctl run` starts a command in tmux
 under a thin supervisor that writes plain files and records a few kinds of
-events: the command exited, a log line matched a pattern, or output stalled.
-Agents are woken only by those events.
+events: the command exited, a log line matched a pattern, output stalled, or a
+check-in time was reached. Agents are woken only by those events.
 
 Python >= 3.11, standard library only, Linux, tmux. `labctl` must be on the
 agents' `PATH` (e.g. `uv tool install .`).
@@ -13,14 +13,14 @@ agents' `PATH` (e.g. `uv tool install .`).
 
 ```
 labctl run [--name N] [--slot NAME] [--wake-on REGEX]... [--stall MINUTES]
-           [--check CMD] [--brief FILE] [--harness claude|codex|opencode]
+           [--checkin MINUTES]... [--check CMD] [--brief FILE] [--harness claude|codex|opencode]
            [--manager HARNESS:SESSION_ID] -- <command...>
 labctl status [ID]          # all runs + recent inbox, or one run in detail
 labctl tail ID [-n N]       # last N log lines (default 40)
 labctl wait ID [--after SEQ]   # the run's next event
 labctl wait [--after N]        # the next manager wake of any run (inbox entry)
 labctl cancel ID
-labctl escalate ID -m TEXT  # experimenter -> manager
+labctl escalate ID [--fix] -m TEXT   # experimenter -> manager (--fix: a fix request)
 labctl sessions [ID]        # agent sessions: role, harness, id, started, busy
 labctl attach ID [ROLE]     # open the experimenter (default) or manager conversation
 labctl install HARNESS [--project DIR]   # write role prompts and the manager skill
@@ -33,6 +33,12 @@ labctl install HARNESS [--project DIR]   # write role prompts and the manager sk
   of a line is logged. A line without a newline is kept to its last 64 KiB.
 - `--stall MINUTES`: record one `stall` event after that long without output;
   re-armed when output resumes.
+- `--checkin MINUTES` (repeatable, float): record one `checkin` event that long
+  after the command starts (not after queueing on a slot), if it is still
+  running. The launcher picks moments when the first outputs should exist
+  (first progress lines, first checkpoint or result file); the brief says what
+  to verify at each. A check-in where everything matches the brief ends
+  silently: the experimenter does not wake the manager.
 - `--check CMD`: after exit 0, run CMD through the shell in the run's cwd with
   `LABCTL_RUN_DIR` and `LABCTL_RUN_ID` set. A non-zero exit makes the run `failed`.
 - `--brief FILE` (at most 64 KiB) gives the run an experimenter agent on
@@ -67,18 +73,24 @@ matched line, then the last 40 log lines (each cut at 500 characters).
 
 ```
 [labctl wake] source=supervisor run=<id> event=exit code=1 check=none seq=3 time=<UTC>
+[labctl wake] source=supervisor run=<id> event=checkin minutes=5 seq=2 time=<UTC>
 [labctl wake] source=experimenter run=<id> event=escalation seq=4 inbox=2 time=<UTC>
+[labctl wake] source=experimenter run=<id> event=fix_request seq=5 inbox=3 time=<UTC>
+[labctl wake] source=experimenter run=<id> event=report code=0 check=passed seq=6 inbox=4 time=<UTC>
   <message>
 ```
 
-- Successful or cancelled exit, `escalation`, `report`, `delivery_failed`: to the manager.
-- Failed exit, `match`, `stall`: to the experimenter if the run has a brief, else to the manager.
-- If the experimenter does not escalate after a failed exit, labctl sends its final reply as `report`.
+- Cancelled exit, `escalation`, `fix_request`, `report`, `delivery_failed`: to the manager.
+- Exit (successful or failed), `match`, `stall`, `checkin`: to the experimenter if the run has a brief, else to the manager.
+- After an experimenter turn on an exit, the manager gets exactly one message
+  for it: the `escalation` or `fix_request` sent during the turn, else the
+  experimenter's final reply as `report` (with the exit's code and check).
 - A harness that fails, times out (30 min, `LABCTL_HARNESS_TIMEOUT`) or prints no session id gives `delivery_failed` (source `labctl`) with the error and the undelivered wake.
 - Everything for the manager is appended to `<runs>/inbox.jsonl`; with `--manager` that session is also resumed headlessly, otherwise an interactive manager runs `labctl wait` in the background.
 
 The experimenter session starts on its first event (brief + wake) and is
-resumed on later ones; a healthy run costs no model calls. Delivery runs in a
+resumed on later ones; a healthy run costs one turn per check-in plus one to
+verify its outputs at exit. Delivery runs in a
 detached `labctl _deliver`, so a slow agent never stalls the run. One turn at
 a time per session (`flock`; the manager lock is shared by all runs), and all
 events not yet delivered go into one turn, so a burst of matches costs a few
@@ -190,9 +202,12 @@ characters, and a wake carries the last 40 log lines.
 ### What the experimenter may do
 
 The experimenter runs headless with a narrow permission set: for Claude Code,
-only `labctl` commands and file reads (`--permission-mode dontAsk`); for
-Codex, the `workspace-write` sandbox; for opencode, its default in-project
-permissions. Its authority beyond that comes from the run's brief.
+only `labctl` and `nvidia-smi` commands and file reads and searches (`Read`,
+`Grep`, `Glob`; `--permission-mode dontAsk`); for Codex, the `workspace-write`
+sandbox; for opencode, its default in-project permissions. Its prompt limits it
+to the files the brief names, and it changes nothing: for a bug in the
+experiment it sends `labctl escalate ID --fix` and the manager has it fixed.
+Its authority beyond that comes from the run's brief.
 
 ## Example
 

@@ -11,6 +11,8 @@
 #   d  stall with a brief: the experimenter is woken
 #   e  cancel: recorded as cancelled, in the inbox
 #   f  unattended manager: a real headless manager session gets the wake
+#   g  --checkin with a brief, wrong early output: the inbox gets a fix_request (or escalation)
+#   h  success with a brief: the experimenter verifies the outputs; the inbox gets one report
 # Models come from a temp LABCTL_CONFIG: claude uses $CLAUDE_MODEL (sonnet) for
 # every tier, opencode $OPENCODE_MODEL (opencode-go/mimo-v2.6-flash); codex keeps
 # labctl's defaults. Each scenario waits up to $LIVE_TIMEOUT seconds (240).
@@ -39,6 +41,7 @@ export PATH LABCTL_CONFIG LABCTL_HARNESS
 RUNS=$WORK/project/runs
 TAG=$("$PY" -c 'import secrets; print(secrets.token_hex(2))')
 A=$TAG-a-success B=$TAG-b-fail CN=$TAG-c-nan-fail D=$TAG-d-stall E=$TAG-e-cancel F=$TAG-f-manager
+G=$TAG-g-checkin HV=$TAG-h-verified
 cat > "$LABCTL_CONFIG" <<EOF
 [claude]
 frontier = "$CLAUDE_MODEL"
@@ -57,6 +60,22 @@ Normal: progress lines "<stage> i/N key=... loss=..." every fraction of a second
 Allowed without asking: nothing. Do not relaunch or cancel runs.
 On a loss=nan line or a stall: look at the log, say in one line what you saw, and end your turn.
 Escalate when: the run fails. Run `labctl escalate ID -m "..."` with the error line, then end your turn.
+EOF
+cat > brief-g.md <<'EOF'
+Goal: a four-stage test campaign (clean, dependence, swap, replay). Each stage writes out/g/<stage>/completion.json when it ends.
+Normal: progress lines "<stage> i/N key=... loss=..." every fraction of a second; the run takes about 40 s.
+Check-ins:
+- At 0.25 min: stage "clean" has ended, so out/g/clean/completion.json exists and contains "complete": true.
+On success: out/g/<stage>/completion.json exists for all four stages with "complete": true.
+Allowed without asking: cancel the run when a check-in fails.
+Escalate when: anything else looks wrong.
+EOF
+cat > brief-h.md <<'EOF'
+Goal: a four-stage test campaign (clean, dependence, swap, replay) that writes out/h/<stage>/completion.json.
+Normal: progress lines "<stage> i/N key=... loss=..." every fraction of a second; the run takes about 4 s.
+On success: out/h/<stage>/completion.json exists for each of the four stages and contains "complete": true. Name the files you checked in your verdict.
+Allowed without asking: nothing.
+Escalate when: an output is missing or wrong.
 EOF
 echo "labctl live check: harness=$H work=$WORK tag=$TAG"
 
@@ -90,6 +109,10 @@ except OSError:
 sys.exit(0 if any(e.get("run") == run and re.search(pattern, e.get("text", "")) for e in entries) else 1)
 EOF
 }
+inbox_count() {  # RUN: number of inbox entries of the run
+    "$PY" -c 'import json,sys; print(sum(json.loads(l).get("run") == sys.argv[2] for l in open(sys.argv[1])))' \
+        "$RUNS/inbox.jsonl" "$1" 2>/dev/null || echo 0
+}
 session_of() {  # RUN ROLE -> session id
     "$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], {}).get("session_id") or "")' \
         "$RUNS/$1/sessions.json" "$2" 2>/dev/null
@@ -109,7 +132,7 @@ for chunk in [text, *text.splitlines()]:
 EOF
 }
 
-want() { case " ${SCENARIOS:-a b c d e f} " in *" $1 "*) return 0 ;; esac; return 1; }
+want() { case " ${SCENARIOS:-a b c d e f g h} " in *" $1 "*) return 0 ;; esac; return 1; }
 
 # --- a headless manager session for (f) -------------------------------------
 MSID=
@@ -143,6 +166,9 @@ want c && launch --name "$CN" --brief brief.md --wake-on "loss=nan" -- \
 want d && launch --name "$D" --brief brief.md --stall 0.1 -- \
     $C run --out out/d --duration 4 --stall-at dependence 20
 want e && launch --name "$E" -- $C run --out out/e --duration 300
+want g && launch --name "$G" --brief brief-g.md --checkin 0.25 -- \
+    $C run --out out/g --duration 40 --bad-output-at clean
+want h && launch --name "$HV" --brief brief-h.md -- $C run --out out/h --duration 4
 want f && [ -n "$MSID" ] && launch --name "$F" --manager "$H:$MSID" -- $C run --out out/f --duration 3
 if want e; then sleep 3; labctl cancel "$E"; fi
 
@@ -188,6 +214,19 @@ if want f && [ -n "$MSID" ]; then
     result "f unattended manager ($MSID) received the wake" $? "$WORK/manager-ask.json"
 elif want f; then
     result "f unattended manager: could not start a manager session" 1 "$WORK/manager-start.json"
+fi
+
+if want g; then
+    wait_for "$TIMEOUT" inbox_has "$G" 'event=(fix_request|escalation)'
+    inbox_has "$G" 'event=(fix_request|escalation)' && grep -q '"event": "checkin"' "$RUNS/$G/events.jsonl"
+    result "g check-in finds wrong output -> fix_request/escalation in inbox" $? "$RUNS/$G/wake.log"
+fi
+if want h; then
+    wait_for "$TIMEOUT" inbox_has "$HV" 'event=report'
+    sleep 5  # a second message would arrive right after the first
+    inbox_has "$HV" 'event=report code=0 check=none' && inbox_has "$HV" 'completion\.json' \
+        && [ "$(inbox_count "$HV")" -eq 1 ]
+    result "h success -> experimenter verifies -> one report in inbox" $? "$RUNS/inbox.jsonl"
 fi
 
 echo "labctl status:"

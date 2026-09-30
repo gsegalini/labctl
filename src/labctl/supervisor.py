@@ -134,8 +134,10 @@ def _write_line(log, line: bytes) -> None:
 def _stream(proc, log, meta, run_dir: Path) -> None:
     patterns = [re.compile(p) for p in meta["wake_on"]]
     stall = meta["stall_minutes"]
+    checkins = list(meta.get("checkin_minutes") or [])  # sorted; each fires once
     fd = proc.stdout.fileno()
     buf, last, stalled = b"", time.monotonic(), False
+    started = last  # the command's start, not the queueing on a slot
 
     def match(segment: bytes):
         text = segment.decode(errors="replace")
@@ -160,11 +162,15 @@ def _stream(proc, log, meta, run_dir: Path) -> None:
         deadlines = [now + EXIT_POLL_SECONDS] if drain_until is None else [drain_until]
         if stall is not None and not stalled:
             deadlines.append(last + stall * 60)
+        if checkins and drain_until is None:
+            deadlines.append(started + checkins[0] * 60)
         ready, _, _ = select.select([fd], [], [], max(0.0, min(deadlines) - now))
         if drain_until is None and proc.poll() is not None:
             drain_until = time.monotonic() + DRAIN_SECONDS
+        now = time.monotonic()
+        while checkins and drain_until is None and now >= started + checkins[0] * 60:
+            emit(run_dir, "checkin", minutes=checkins.pop(0), elapsed=round(now - started, 1))
         if not ready:
-            now = time.monotonic()
             if drain_until is not None and now >= drain_until:
                 break
             if stall is not None and not stalled and now >= last + stall * 60:
