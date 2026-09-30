@@ -109,7 +109,8 @@ def test_end_to_end_with_tmux(root, tmp_path, fake_agents):
         assert r.stdout.strip() == name
         d = root / name
         wait_until(lambda: status(d).get("state") == "succeeded")
-        assert [e["event"] for e in events(d)] == ["match", "exit"]
+        # the run's own events; the experimenter's report may already follow them
+        assert [e["event"] for e in events(d) if e["source"] == "supervisor"] == ["match", "exit"]
         assert (d / "log").read_text() == "step 1 from-caller\nstep 2\n"
         assert (d / "brief.md").read_text() == "why this run exists\n"
         assert not (d / ".env.json").exists()
