@@ -1,0 +1,134 @@
+# labctl
+
+A small CLI for running long experiments so coding agents (Claude Code, Codex,
+opencode) do not have to watch them. `labctl run` starts a command in tmux
+under a thin supervisor that writes plain files and records a few kinds of
+events: the command exited, a log line matched a pattern, or output stalled.
+Agents are woken only by those events.
+
+Python >= 3.11, standard library only, Linux, tmux. `labctl` must be on the
+agents' `PATH` (e.g. `uv tool install .`).
+
+## Commands
+
+```
+labctl run [--name N] [--slot NAME] [--wake-on REGEX]... [--stall MINUTES]
+           [--check CMD] [--brief FILE] [--harness claude|codex|opencode]
+           [--manager HARNESS:SESSION_ID] -- <command...>
+labctl status [ID]          # all runs + recent inbox, or one run in detail
+labctl tail ID [-n N]       # last N log lines (default 40)
+labctl wait ID [--after SEQ]   # the run's next event
+labctl wait [--after N]        # the next manager wake of any run (inbox entry)
+labctl cancel ID
+labctl escalate ID -m TEXT  # experimenter -> manager
+labctl sessions [ID]        # agent sessions: role, harness, id, started, busy
+labctl attach ID [ROLE]     # open the experimenter (default) or manager conversation
+labctl install HARNESS [--project DIR]   # write role prompts and the manager skill
+```
+
+- `--slot NAME`: runs sharing a slot execute one at a time (an exclusive
+  `flock` on `<runs>/.slots/NAME.lock`); waiting runs are `queued`.
+- `--wake-on REGEX`: every log line matching it (`re.search`) records a
+  `match` event. `\r` progress updates are matched too; only the last update
+  of a line is logged. A line without a newline is kept to its last 64 KiB.
+- `--stall MINUTES`: record one `stall` event after that long without output;
+  re-armed when output resumes.
+- `--check CMD`: after exit 0, run CMD through the shell in the run's cwd with
+  `LABCTL_RUN_DIR` and `LABCTL_RUN_ID` set. A non-zero exit makes the run `failed`.
+- `--brief FILE` (at most 64 KiB) gives the run an experimenter agent on
+  `--harness` (default `$LABCTL_HARNESS`). `--manager` names an existing
+  session to resume with manager wakes.
+- `wait ID` blocks until an event with `seq > SEQ` exists (default: the latest
+  when `wait` starts) and prints its wake; for a finished run it prints the
+  final `exit` event at once. `wait` without ID does the same for inbox entries.
+- `status` never relaunches anything. A run that claims to be `queued` or
+  `running` without a live supervisor is `unknown (supervisor not running)`;
+  one still `starting` after 30 s is `unknown (supervisor never started)`.
+
+The command runs with the caller's environment plus `LABCTL_RUN_DIR`,
+`LABCTL_RUN_ID`, `LABCTL_RUNS_DIR` and `PYTHONUNBUFFERED=1`, in its own
+process group, with stdout and stderr merged. The run ends when that process
+exits: output is read for 1 s more, then what is left of its process group
+gets SIGTERM (a daemon that called `setsid` survives but no longer holds the
+run). `cancel` sends SIGTERM to the group, then SIGKILL after 5 s.
+
+The supervisor runs in tmux session `labctl-<id>` (`tmux attach` to watch).
+Killing that session (SIGHUP), Ctrl-C in it (SIGINT) or `cancel` stops the run,
+recorded as `cancelled` with the signal. If the pane is stopped (Ctrl-S), the
+echo drops lines; the run and its `log` are unaffected. `labctl run` fails
+before creating anything if the session name is taken, and waits until the
+supervisor has started (its crash output goes to `supervisor.log`).
+
+## Wakes and routing
+
+Every wake starts with a header naming its source. The body is indented, so
+only the first line is a header: the event's message, or for a `match` the
+matched line, then the last 40 log lines (each cut at 500 characters).
+
+```
+[labctl wake] source=supervisor run=<id> event=exit code=1 check=none seq=3 time=<UTC>
+[labctl wake] source=experimenter run=<id> event=escalation seq=4 inbox=2 time=<UTC>
+  <message>
+```
+
+- Successful or cancelled exit, `escalation`, `report`, `delivery_failed`: to the manager.
+- Failed exit, `match`, `stall`: to the experimenter if the run has a brief, else to the manager.
+- If the experimenter does not escalate after a failed exit, labctl sends its final reply as `report`.
+- A harness that fails, times out (30 min, `LABCTL_HARNESS_TIMEOUT`) or prints no session id gives `delivery_failed` (source `labctl`) with the error and the undelivered wake.
+- Everything for the manager is appended to `<runs>/inbox.jsonl`; with `--manager` that session is also resumed headlessly, otherwise an interactive manager runs `labctl wait` in the background.
+
+The experimenter session starts on its first event (brief + wake) and is
+resumed on later ones; a healthy run costs no model calls. Delivery runs in a
+detached `labctl _deliver`, so a slow agent never stalls the run. One turn at
+a time per session (`flock`; the manager lock is shared by all runs), and all
+events not yet delivered go into one turn, so a burst of matches costs a few
+turns, not one each. Messages go to the harness on stdin. `labctl attach`
+holds the session lock while a human is in the conversation; wakes queue
+until they leave.
+
+## Run directory
+
+Runs live in `$LABCTL_RUNS_DIR`, or `./runs` relative to where `labctl` is invoked.
+
+```
+runs/
+  inbox.jsonl      manager wakes {"n", "time", "run", "seq", "text"}, newest last
+  .slots/ .sessions/   slot and manager-session locks
+  <id>/
+    run.json       command, cwd, created time, git commit + dirty flag, options
+    status.json    state (starting|queued|running|succeeded|failed|cancelled), pids, times
+    events.jsonl   {"seq", "time", "source", "run", "event", ...} per line
+    log            merged stdout/stderr (plus --check output)
+    exit-code      exit code; 128+N if killed by signal N
+    brief.md       copy of --brief
+    sessions.json  experimenter / manager: harness, session id, model, started, delivered
+    wake.log       each agent delivery: command, exit code, output tail
+    supervisor.log supervisor errors, if any
+```
+
+The caller's environment reaches the supervisor through a mode-0600
+`.env.json` that the supervisor deletes first thing (and `run`/`cancel`
+delete on failure).
+
+## Example
+
+```
+$ labctl run --name demo --wake-on "step 3" -- sh -c 'for i in 1 2 3 4; do echo step $i; sleep 1; done'
+demo
+$ labctl wait demo
+[labctl wake] source=supervisor run=demo event=match pattern=step 3 seq=1 time=...
+  matched: step 3
+  step 1
+  step 2
+  step 3
+$ labctl wait demo --after 1
+[labctl wake] source=supervisor run=demo event=exit code=0 check=none seq=2 time=...
+...
+```
+
+## Development
+
+```
+uv run pytest                      # fake harnesses, no model calls (~30 s)
+scripts/live_check.sh claude       # real harness calls against tests/sim/fake_campaign.py
+```

@@ -1,0 +1,20 @@
+# Model per role tier and harness. Override any key in ~/.config/labctl/config.toml
+# (same shape; set LABCTL_CONFIG to use another file). The user file wins per key.
+
+[claude]
+frontier = "fable"
+strong = "opus"
+cheap = "haiku"
+
+[codex]
+# Taken from ~/.codex on the development machine: main model, implementer role,
+# experimenter/operator roles.
+frontier = "gpt-6-astra"
+strong = "gpt-6.1-sol"
+cheap = "gpt-6-luna"
+
+[opencode]
+# Defaults to adjust: check `opencode models` for the ids your providers offer.
+frontier = "anthropic/claude-fable-5-1"
+strong = "anthropic/claude-opus-5-5"
+cheap = "anthropic/claude-haiku-4-5-20251001"
