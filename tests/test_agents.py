@@ -275,6 +275,19 @@ def test_fix_request_goes_to_the_manager(root, tmp_path, fake_agents, capsys):
     assert "event=fix_request" in capsys.readouterr().out
 
 
+def test_report_is_the_verdict_on_a_finished_run(root, tmp_path, fake_agents, capsys):
+    d = run_with(root, tmp_path, experimenter="codex", name="rep")
+    with pytest.raises(SystemExit, match="has not exited"):
+        main(["report", "rep", "-m", "too early"])
+    ev(d, "exit", code=0, check="passed", ok=True)
+    assert main(["report", "rep", "-m", "all four stages complete\nchecked out/*/completion.json"]) == 0
+    assert capsys.readouterr().out == "report for rep seq=2\n"
+    [entry] = inbox(root)
+    assert entry["text"].splitlines()[0].startswith(
+        "[labctl wake] source=experimenter run=rep event=report code=0 check=passed seq=2 inbox=1 ")
+    assert entry["text"].splitlines()[1:] == ["  all four stages complete", "  checked out/*/completion.json"]
+
+
 def test_sessions_output(root, tmp_path, capsys):
     run_with(root, tmp_path, experimenter="opencode", manager="claude:mgr-1", name="s1")
     run_with(root, tmp_path, name="plain")

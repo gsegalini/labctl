@@ -16,7 +16,9 @@ Environment knobs:
   FAKE_REPLY  the agent's final reply (default "all good")
   FAKE_ESCALATE_RUN / FAKE_ESCALATE  run `labctl escalate RUN -m TEXT` during the turn
   FAKE_FIX    if set, that escalation is a fix request (`--fix`)
-  FAKE_ATTACH_SLEEP  seconds an interactive (attach) session stays open
+  FAKE_ATTACH_SLEEP  seconds an interactive (attach) session stays open; an open codex session
+              makes `exec resume` fail with "already has an active writer", like the real one
+  FAKE_ATTACH_REPORT  run `labctl report FAKE_ESCALATE_RUN -m TEXT` before leaving that session
 """
 
 import json
@@ -97,6 +99,8 @@ def main():
         resuming = "--resume" in opts
     elif name == "codex":
         interactive = args[:1] == ["resume"]
+        if interactive:
+            sid = args[-1]
         if args[:1] == ["exec"]:
             if args[-1].startswith("-") and args[-1] != "-":
                 die(f"error: unexpected argument '{args[-1]}' found")
@@ -116,7 +120,17 @@ def main():
 
     RECORD["prompt"] = prompt
     if interactive:
-        time.sleep(float(os.environ.get("FAKE_ATTACH_SLEEP", "0")))
+        writer = f"{calls}.writer.{sid}"
+        if name == "codex":
+            open(writer, "w").close()
+        try:
+            time.sleep(float(os.environ.get("FAKE_ATTACH_SLEEP", "0")))
+            if os.environ.get("FAKE_ATTACH_REPORT"):
+                subprocess.run([sys.executable, "-P", "-m", "labctl", "report", os.environ["FAKE_ESCALATE_RUN"],
+                                "-m", os.environ["FAKE_ATTACH_REPORT"]], check=True, stdout=subprocess.DEVNULL)
+        finally:
+            if name == "codex":
+                os.remove(writer)
     else:
         time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
         if mode == "hang":
@@ -141,8 +155,12 @@ def main():
     if mode == "garbage":
         print("Segmentation fault (core dumped)?! <html>not json</html>")
         return
-    if mode == "busy" and name == "codex" and args[:2] == ["exec", "resume"]:
-        die("error: thread thread-x already has an active writer")
+    open_elsewhere = os.path.exists(f"{calls}.writer.{sid}")  # a codex TUI has the session open
+    if name == "codex" and args[:2] == ["exec", "resume"] and (mode == "busy" or open_elsewhere):
+        die(f"error: thread {sid} already has an active writer")
+    if name == "codex" and args[:1] == ["queue"]:
+        print(f"Queued message m-1 for thread {args[args.index('--thread') + 1]}.")
+        return
 
     if name == "claude":
         if mode == "ratelimit":  # reported in the JSON, exit code 0

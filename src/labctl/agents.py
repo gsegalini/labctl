@@ -1,7 +1,8 @@
 """Agent sessions of a run: records, per-session locks, one wake turn, attach.
 
 <run>/sessions.json:
-  {"experimenter": {"harness", "session_id", "model", "started"},   # only with --brief
+  {"experimenter": {"harness", "session_id", "model", "started",    # only with --brief
+                    "queued_exit"},  # seq of an exit wake queued into an open codex conversation
    "manager": {"harness", "session_id", "model"}}                   # only with --manager
 """
 
@@ -182,6 +183,7 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
     message = _message(run_dir, pending)
     h, sid = rec["harness"], rec.get("session_id")
     starting = role == "experimenter" and not rec.get("started")
+    exits = [e for e in pending if e["event"] == "exit"]
     r, queued = None, False
     try:
         if starting and sid:
@@ -205,6 +207,11 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
         elif r is None:
             r = _run(run_dir, role, seqs, harness.resume(h, sid, message, model=rec.get("model"), in_git=in_git), cwd)
             if h == "codex" and r.returncode and "already has an active writer" in r.stderr:
+                # a person has the session open: queue the wake into their conversation
+                if role == "experimenter" and exits:
+                    message += (f"\n\nlabctl: this wake was queued into a conversation a person has open, so your "
+                                f"reply is not forwarded. Send your verdict with `labctl report {run_dir.name} "
+                                f'-m "..."` (or escalate).')
                 r, queued = _run(run_dir, role, seqs, harness.codex_queue(sid, message), cwd), True
     except ValueError as e:  # a command that cannot be built (e.g. an oversized role prompt)
         r = subprocess.CompletedProcess([], 2, "", f"labctl: {e}")
@@ -228,17 +235,38 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
             text += "\n\nUndelivered wake(s), forwarded to the manager:\n" + message
         wake.emit(run_dir, "delivery_failed", source="labctl", role=role, for_seq=seqs, message=text)
         return
-    exits = [e for e in pending if e["event"] == "exit"]
     if role == "experimenter" and exits:
-        escalated = any(e["event"] in ("escalation", "fix_request") and e["seq"] > last_seq
-                        for e in runs.read_events(run_dir))
-        if not escalated:  # the run is over: its outcome must reach the manager
+        if queued:  # the verdict comes from `labctl report`; attach follows up if it does not
+            update(run_dir, role, queued_exit=exits[-1]["seq"])
+        elif not _verdict_after(run_dir, last_seq):  # the run is over: its outcome must reach the manager
             wake.emit(run_dir, "report", source="experimenter", code=exits[-1].get("code"),
                       check=exits[-1].get("check"), message=reply or _tail(r.stdout + r.stderr))
 
 
+def _verdict_after(run_dir: Path, seq: int) -> bool:
+    return any(e["event"] in ("escalation", "fix_request", "report") and e["seq"] > seq
+               for e in runs.read_events(run_dir))
+
+
+def _follow_up_queued_exit(run_dir: Path, role: str, path: Path) -> None:
+    """After a codex attach: an exit wake queued into the conversation still needs its verdict."""
+    with session_lock(path):
+        rec = load(run_dir)[role]
+        seq = rec.get("queued_exit")
+        if not seq:
+            return
+        update(run_dir, role, queued_exit=None)
+        events = runs.read_events(run_dir)
+        if _verdict_after(run_dir, seq):
+            return
+        print("labctl attach: the run's exit reached the conversation but no verdict was sent; "
+              "asking the experimenter for it...", flush=True)
+        _turn(run_dir, role, rec, [e for e in events if e["seq"] == seq], last_seq=events[-1]["seq"])
+
+
 def attach(run_dir: Path, role: str) -> int:
-    """Open the session for a human, holding its lock so wakes queue until they leave."""
+    """Open the session for a human. Wakes wait until they leave, except for codex,
+    which queues them into the open conversation."""
     rec = load(run_dir).get(role)
     if not rec:
         raise SystemExit(f"labctl attach: run {run_dir.name} has no {role}"
@@ -249,5 +277,11 @@ def attach(run_dir: Path, role: str) -> int:
     path = lock_path(run_dir, role, rec)
     if busy(path):
         print("labctl attach: waiting for the agent's current turn to finish...", flush=True)
+    cwd = runs.read_json(run_dir / "run.json")["cwd"]
     with session_lock(path):
-        return subprocess.run(argv, cwd=runs.read_json(run_dir / "run.json")["cwd"]).returncode
+        if rec["harness"] != "codex":
+            return subprocess.run(argv, cwd=cwd).returncode
+    code = subprocess.run(argv, cwd=cwd).returncode
+    if role == "experimenter":
+        _follow_up_queued_exit(run_dir, role, path)
+    return code

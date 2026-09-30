@@ -61,12 +61,12 @@ def check(root, d, calls, state, capsys=None):
     if capsys:
         capsys.readouterr()
     # 2. nothing launched twice: each event reaches at most one successful turn; one session start
-    delivered = Counter()
+    delivered, queued = Counter(), Counter()  # turns; `codex queue` into an open conversation (not a turn)
     ok_calls = [c for c in calls() if c.get("code") == 0 and c.get("prompt")]
     for c in ok_calls:
         for run, seq in set(HEADER.findall(c["prompt"])):
             if run == d.name:
-                delivered[int(seq)] += 1
+                (queued if c["argv"][:2] == ["codex", "queue"] else delivered)[int(seq)] += 1
     assert all(n == 1 for n in delivered.values()), delivered
     starts = [c for c in ok_calls if is_start(c) and f"run={d.name} " in c["prompt"]]
     assert len(starts) <= 1
@@ -78,7 +78,7 @@ def check(root, d, calls, state, capsys=None):
         if wake.route(d, e) == "manager":
             assert e["seq"] in in_inbox, e
         else:
-            assert delivered[e["seq"]] == 1 or e["seq"] in failed, e
+            assert delivered[e["seq"]] == 1 or queued[e["seq"]] or e["seq"] in failed, e
 
 
 # --- the supervisor and the command ----------------------------------------
@@ -475,6 +475,49 @@ def test_attach_holds_wakes_until_the_human_leaves(root, tmp_path, fake_agents, 
     attach_call, wake_call = fake_agents()
     assert attach_call["argv"] == ["claude", "--resume", "S-att"]
     assert wake_call["start"] >= attach_call["end"] and "event=stall" in wake_call["prompt"]
+    check(root, d, fake_agents, "starting", capsys)
+
+
+def codex_attach_during_exit(root, tmp_path, fake_agents, monkeypatch, name):
+    """Attach to a codex experimenter; the run exits while the conversation is open."""
+    monkeypatch.setenv("FAKE_ATTACH_SLEEP", "1.5")
+    monkeypatch.setenv("FAKE_ESCALATE_RUN", name)
+    d = brief_run(root, tmp_path, "true", h="codex", name=name)
+    agents.update(d, "experimenter", session_id=f"thr-{name}", started=True)
+    fake_agents.add_session(f"thr-{name}")
+    t = threading.Thread(target=main, args=(["attach", name],))
+    t.start()
+    wait_until(lambda: (tmp_path / f"calls.jsonl.writer.thr-{name}").exists())
+    wake.deliver(d, runs.append_event(d, "exit", code=0, check=None, ok=True))
+    wait_until(lambda: any(c["argv"][:2] == ["codex", "queue"] for c in fake_agents()))
+    t.join(timeout=10)
+    settle(d)
+    return d
+
+
+def test_codex_attach_queues_the_exit_and_asks_for_the_verdict_after(root, tmp_path, fake_agents, monkeypatch,
+                                                                     capsys):
+    d = codex_attach_during_exit(root, tmp_path, fake_agents, monkeypatch, "cq1")
+    busy, queue, attach_call, follow_up = fake_agents()  # in the order they ended
+    assert attach_call["argv"][:2] == ["codex", "resume"] and busy["code"] == 1
+    assert queue["start"] < attach_call["end"]  # delivered into the open conversation
+    assert "event=exit code=0" in queue["prompt"] and "labctl report cq1 -m" in queue["prompt"]
+    # nobody sent a verdict from the conversation: after it closed, one headless turn got it
+    assert follow_up["argv"][:3] == ["codex", "exec", "resume"] and follow_up["start"] >= attach_call["end"]
+    assert "event=exit code=0" in follow_up["prompt"] and "labctl report" not in follow_up["prompt"]
+    assert "asking the experimenter for it" in capsys.readouterr().out
+    [entry] = inbox(root)
+    assert "event=report code=0 check=none" in entry["text"] and "all good" in entry["text"]
+    assert agents.load(d)["experimenter"]["queued_exit"] is None
+    check(root, d, fake_agents, "starting", capsys)
+
+
+def test_codex_attach_verdict_sent_from_the_conversation(root, tmp_path, fake_agents, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_ATTACH_REPORT", "verified 4 completion.json files")
+    d = codex_attach_during_exit(root, tmp_path, fake_agents, monkeypatch, "cq2")
+    assert [c["argv"][:2] for c in fake_agents()] == [["codex", "exec"], ["codex", "queue"], ["codex", "resume"]]
+    [entry] = inbox(root)  # the one report, from `labctl report`; no labctl report of the queue output
+    assert "event=report code=0 check=none" in entry["text"] and "verified 4 completion.json" in entry["text"]
     check(root, d, fake_agents, "starting", capsys)
 
 

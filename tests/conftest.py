@@ -36,7 +36,7 @@ def fake_agents(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_CALLS", str(calls))
     for var in ("FAKE_MODE", "FAKE_ONCE", "FAKE_SLEEP", "FAKE_REPLY", "FAKE_ESCALATE", "FAKE_ESCALATE_RUN", "FAKE_FIX",
-                "FAKE_ATTACH_SLEEP"):
+                "FAKE_ATTACH_SLEEP", "FAKE_ATTACH_REPORT"):
         monkeypatch.delenv(var, raising=False)
 
     def read():

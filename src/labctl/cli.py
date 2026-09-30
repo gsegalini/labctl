@@ -1,4 +1,4 @@
-"""Command line: labctl run | status | tail | wait | cancel | escalate | sessions | attach | install."""
+"""Command line: labctl run | status | tail | wait | cancel | escalate | report | sessions | attach | install."""
 
 import argparse
 import datetime
@@ -221,6 +221,17 @@ def cmd_escalate(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    d = _run_dir(args.id)
+    exits = [e for e in runs.read_events(d) if e["event"] == "exit"]
+    if not exits:
+        sys.exit(f"labctl report: run {d.name} has not exited; a report is the verdict on a finished run")
+    ev = wake.emit(d, "report", source="experimenter", code=exits[-1].get("code"), check=exits[-1].get("check"),
+                   message=args.m)
+    print(f"report for {d.name} seq={ev['seq']}")
+    return 0
+
+
 def cmd_sessions(args) -> int:
     root = runs.runs_dir()
     if args.id:
@@ -251,7 +262,7 @@ def cmd_install(args) -> int:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="labctl", description="Run experiments; wake agents on events.")
     sub = p.add_subparsers(dest="cmd", required=True,
-                           metavar="{run,status,tail,wait,cancel,escalate,sessions,attach,install}")
+                           metavar="{run,status,tail,wait,cancel,escalate,report,sessions,attach,install}")
 
     r = sub.add_parser("run", help="start a command under the supervisor in tmux")
     r.add_argument("--name", help="run id (default: timestamp + random hex)")
@@ -294,6 +305,11 @@ def main(argv=None) -> int:
     e.add_argument("--fix", action="store_true", help="a fix request: a bug in the experiment's code or config")
     e.add_argument("-m", required=True, metavar="TEXT")
     e.set_defaults(func=cmd_escalate)
+
+    rp = sub.add_parser("report", help="experimenter -> manager: the verdict on a finished run")
+    rp.add_argument("id")
+    rp.add_argument("-m", required=True, metavar="TEXT")
+    rp.set_defaults(func=cmd_report)
 
     se = sub.add_parser("sessions", help="agent sessions of all runs or one run")
     se.add_argument("id", nargs="?")

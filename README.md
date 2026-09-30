@@ -21,6 +21,7 @@ labctl wait ID [--after SEQ]   # the run's next event
 labctl wait [--after N]        # the next manager wake of any run (inbox entry)
 labctl cancel ID
 labctl escalate ID [--fix] -m TEXT   # experimenter -> manager (--fix: a fix request)
+labctl report ID -m TEXT    # experimenter -> manager: the verdict on a finished run
 labctl sessions [ID]        # agent sessions: role, harness, id, started, busy
 labctl attach ID [ROLE]     # open the experimenter (default) or manager conversation
 labctl install HARNESS [--project DIR]   # write role prompts and the manager skill
@@ -85,6 +86,7 @@ matched line, then the last 40 log lines (each cut at 500 characters).
 - After an experimenter turn on an exit, the manager gets exactly one message
   for it: the `escalation` or `fix_request` sent during the turn, else the
   experimenter's final reply as `report` (with the exit's code and check).
+  An experimenter can also send the report itself with `labctl report`.
 - A harness that fails, times out (30 min, `LABCTL_HARNESS_TIMEOUT`) or prints no session id gives `delivery_failed` (source `labctl`) with the error and the undelivered wake.
 - Everything for the manager is appended to `<runs>/inbox.jsonl`; with `--manager` that session is also resumed headlessly, otherwise an interactive manager runs `labctl wait` in the background.
 
@@ -96,7 +98,12 @@ a time per session (`flock`; the manager lock is shared by all runs), and all
 events not yet delivered go into one turn, so a burst of matches costs a few
 turns, not one each. Messages go to the harness on stdin. `labctl attach`
 holds the session lock while a human is in the conversation; wakes queue
-until they leave.
+until they leave. Codex is the exception: attach only waits for a running
+turn, and wakes that arrive while you are in the conversation go into it
+with `codex queue`. An exit wake queued this way asks the experimenter to
+send its verdict with `labctl report`; if none was sent when you leave,
+attach runs one headless turn to get it. Open codex sessions through
+`labctl attach`, not `codex resume`, or that follow-up does not happen.
 
 ## Run directory
 
