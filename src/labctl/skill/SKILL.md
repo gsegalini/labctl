@@ -56,3 +56,6 @@ You receive: successful and cancelled exits, escalations, reports (the experimen
 - `labctl tail ID -n N` for more log; `labctl sessions` for agent sessions per run; `labctl cancel ID` to stop.
 - After an escalation, decide, act (relaunch with a changed command and brief, or cancel), and record the decision where the project keeps its notes.
 - A human can open an agent conversation with `labctl attach ID [experimenter|manager]`; wakes wait until they leave.
+
+## Cleaning up
+When a run has finished and you have handled its result, make sure its tmux session is gone: `tmux ls` should list no `labctl-<id>` for finished runs. Remove leftovers with `tmux kill-session -t labctl-<id>`. Also close any other tmux session you started yourself for the task. Never kill the session of a run that is still `queued` or `running` (that cancels it), and leave sessions you did not create. The run's files in `runs/<id>/` stay as the record.
