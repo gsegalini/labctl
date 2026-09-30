@@ -9,7 +9,8 @@ import json
 
 from labctl.install import toml_str
 
-CLAUDE_TOOLS = ["--permission-mode", "dontAsk", "--allowedTools", "Bash(labctl:*)", "Read"]
+CLAUDE_TOOLS = ["--permission-mode", "dontAsk", "--allowedTools", "Bash(labctl:*)", "Bash(nvidia-smi:*)",
+                "Read", "Grep", "Glob"]
 CODEX_NET = ["-c", "sandbox_workspace_write.network_access=true"]
 MAX_ARG = 100_000  # bytes; Linux refuses a single argv element above 128 KiB
 
