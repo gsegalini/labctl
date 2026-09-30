@@ -110,6 +110,90 @@ The caller's environment reaches the supervisor through a mode-0600
 `.env.json` that the supervisor deletes first thing (and `run`/`cancel`
 delete on failure).
 
+## Configuration
+
+### Setup per project
+
+```
+uv tool install --editable /path/to/labctl   # puts `labctl` on PATH
+cd <project>
+labctl install claude      # and/or: codex, opencode
+```
+
+`install` writes the three roles and the manager skill where each harness
+looks for them, with the model for each role taken from the config below.
+Rerun it after changing the config. It refuses to overwrite an agent file it
+did not write. Add `runs/` to the project's `.gitignore`.
+
+| Harness | Roles | Manager skill |
+| --- | --- | --- |
+| claude | `.claude/agents/{implementer,experimenter,explorer}.md` | `.claude/skills/labctl-manager/SKILL.md` |
+| codex | `.codex/agents/*.toml` | `.agents/skills/labctl-manager/SKILL.md` |
+| opencode | `.opencode/agents/*.md` | `.agents/skills/labctl-manager/SKILL.md` |
+
+A harness reads agent files when a session starts, so restart open sessions
+after `install`.
+
+### Models: `~/.config/labctl/config.toml`
+
+Each role has a tier, and the config maps tiers to model ids per harness.
+
+| Tier | Used by |
+| --- | --- |
+| `frontier` | the manager (only used by labctl to resume a Codex manager, which does not remember its model) |
+| `strong` | implementer |
+| `cheap` | explorer and experimenter |
+
+```toml
+[claude]            # aliases (fable, opus, sonnet, haiku) or full model ids
+frontier = "fable"
+strong = "opus"
+cheap = "sonnet"
+
+[codex]             # bare model ids
+frontier = "gpt-6-astra"
+strong = "gpt-6.1-sol"
+cheap = "gpt-6-luna"
+
+[opencode]          # provider/model, as listed by `opencode models`
+frontier = "opencode-go/kimi-k3"
+strong = "opencode-go/mimo-v2.6-pro"
+cheap = "opencode-go/mimo-v2.6-flash"
+```
+
+The file is optional. Any key it sets overrides the packaged default in
+`src/labctl/defaults.toml`; missing keys keep the default. The packaged
+opencode defaults name an `anthropic/` provider, so set `[opencode]` if your
+opencode does not have that provider.
+
+The model is fixed where it is used: `install` writes it into the role files,
+and `labctl run --brief` records the experimenter's model in the run's
+`sessions.json` when the run is created.
+
+### Environment variables
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `LABCTL_RUNS_DIR` | where runs and the inbox live | `./runs` |
+| `LABCTL_HARNESS` | harness for the experimenter when `--harness` is not given | none (`--harness` required with `--brief`) |
+| `LABCTL_CONFIG` | path of the model config file | `~/.config/labctl/config.toml` |
+| `LABCTL_HARNESS_TIMEOUT` | seconds before a hung agent turn is killed and reported as `delivery_failed` | 1800 |
+
+Set by labctl for the supervised command and its `--check`: `LABCTL_RUN_ID`,
+`LABCTL_RUN_DIR`.
+
+### Fixed limits
+
+A brief is at most 64 KiB. Log lines quoted in a wake are cut at 500
+characters, and a wake carries the last 40 log lines.
+
+### What the experimenter may do
+
+The experimenter runs headless with a narrow permission set: for Claude Code,
+only `labctl` commands and file reads (`--permission-mode dontAsk`); for
+Codex, the `workspace-write` sandbox; for opencode, its default in-project
+permissions. Its authority beyond that comes from the run's brief.
+
 ## Example
 
 ```
