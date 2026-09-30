@@ -95,23 +95,51 @@ def _age(created: str | None) -> str:
 
 def cmd_status(args) -> int:
     if args.id is None:
+def _table(rows: list[list[str]], indent: str = "") -> None:
+    """Left-aligned columns, the last one unpadded."""
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
+    for r in rows:
+        print(indent + "  ".join([c.ljust(w) for c, w in zip(r, widths)] + [r[-1]]).rstrip())
+
+
+def _what(event: dict) -> str:
+    """One line: 'exit code=1 check=none', or 'escalation: <first message line>'."""
+    text = wake.summary(event).removeprefix("event=")
+    lines = str(event.get("message", "")).splitlines()
+    if lines:
+        text += ": " + lines[0] + (" ..." if len(lines) > 1 else "")
+    return text if len(text) <= 120 else text[:117] + "..."
+
+
         root = runs.runs_dir()
-        dirs = sorted(d for d in root.iterdir() if (d / "run.json").exists()) if root.is_dir() else []
+        dirs = [d for d in root.iterdir() if (d / "run.json").exists()] if root.is_dir() else []
+        if not dirs:
+            print(f"no runs in {root}")
+            return 0
+        metas = {d: runs.read_json(d / "run.json", {}) for d in dirs}
+        dirs.sort(key=lambda d: (str(metas[d].get("created", "")), d.name))
+        rows = [["RUN", "STATE", "AGE", "LAST EVENT"]]
         for d in dirs:
-            meta = runs.read_json(d / "run.json", {})
             events = runs.read_events(d)
             own = [e for e in events if e.get("source") == "supervisor"]  # the run's own outcome
-            last = wake.summary(own[-1]) if own else "-"
+            last = _what(own[-1]) if own else "-"
             failures = sum(e.get("event") == "delivery_failed" for e in events)
             if failures:
                 last += f"  [{failures} delivery failure{'s' * (failures > 1)}]"
-            print(f"{d.name:<24} {runs.state(d):<12} {_age(meta.get('created')):>4}  {last}")
-        entries = runs.read_jsonl(wake.inbox_path(root))[-5:]
+            rows.append([d.name, runs.state(d), _age(metas[d].get("created")), last])
+        print(f"runs in {root}\n")
+        _table(rows)
+        entries = runs.read_jsonl(wake.inbox_path(root))
         if entries:
-            print(f"\ninbox ({wake.inbox_path(root)}, last {len(entries)}):")
-            for e in entries:  # the header and the last lines of its body
-                header, *body = str(e.get("text", "")).splitlines() or [""]
-                print("\n".join([header, *body[-3:]]))
+            shown = f"last 5 of {len(entries)}, " if len(entries) > 5 else ""
+            print(f"\ninbox ({shown}full text in {wake.inbox_path(root)}):")
+            rows = []
+            for e in entries[-5:]:
+                ev = next((x for x in runs.read_events(root / str(e.get("run")))
+                           if x.get("seq") == e.get("seq")), None)
+                what = _what(ev) if ev else str(e.get("text", "")).partition("\n")[0]
+                rows.append([f"#{e.get('n')}", _age(e.get("time")) + " ago", str(e.get("run")), what])
+            _table(rows, "  ")
         return 0
     d = _run_dir(args.id)
     meta = runs.read_json(d / "run.json", {})
@@ -125,9 +153,11 @@ def cmd_status(args) -> int:
             for name, key in (("supervisor", "supervisor_pid"), ("command", "child_pid")) if st.get(key)]
     if pids:
         print(f"pids:    {', '.join(pids)}")
-    print("events:")
-    for ev in runs.read_events(d)[-5:]:
-        print("  " + wake.header(ev))
+    events = runs.read_events(d)
+    print(f"events:  {len(events)}" + (", last 5:" if len(events) > 5 else ""))
+    if events:
+        _table([[f"#{e.get('seq')}", _age(e.get("time")) + " ago", str(e.get("source")), _what(e)]
+                for e in events[-5:]], "  ")
     print("log (last 10 lines):")
     for line in runs.tail(d / "log", 10):
         print("  " + line)

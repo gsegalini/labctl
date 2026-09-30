@@ -53,9 +53,23 @@ def test_status_and_tail(root, capsys):
     supervise(d)
     main(["status", d.name])
     out = capsys.readouterr().out
-    assert "state:   succeeded" in out and "event=exit code=0" in out and "  line 3" in out
+    assert "state:   succeeded" in out and "supervisor  exit code=0 check=none" in out and "  line 3" in out
     main(["tail", d.name, "-n", "2"])
     assert capsys.readouterr().out == "line 2\nline 3\n"
+
+
+def test_status_list(root, capsys):
+    assert main(["status"]) == 0
+    assert capsys.readouterr().out == f"no runs in {root}\n"
+    b = make_run(root, "true", name="b-first")
+    a = make_run(root, "true", name="a-second")
+    runs.write_json(a / "run.json", {**runs.read_json(a / "run.json"), "created": "2099-01-01T00:00:00.000Z"})
+    supervise(b)
+    assert main(["status"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[2].split() == ["RUN", "STATE", "AGE", "LAST", "EVENT"]
+    assert lines[3].split()[:2] == ["b-first", "succeeded"] and lines[4].startswith("a-second")  # by creation
+    assert lines[3].endswith("exit code=0 check=none")
 
 
 def test_run_refuses_existing_name(root):
