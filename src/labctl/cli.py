@@ -2,6 +2,7 @@
 
 import argparse
 import datetime
+import math
 import os
 import re
 import shlex
@@ -32,8 +33,12 @@ def cmd_run(args) -> int:
             re.compile(p)
         except re.error as e:
             sys.exit(f"labctl run: bad --wake-on regex {p!r}: {e}")
-    if any(m < 0 for m in args.checkin):
-        sys.exit("labctl run: --checkin MINUTES must not be negative")
+    if any(not math.isfinite(m) or m < 0 for m in args.checkin):
+        sys.exit("labctl run: --checkin MINUTES must be a number >= 0")
+    if args.stall is not None and not (math.isfinite(args.stall) and args.stall > 0):
+        sys.exit("labctl run: --stall MINUTES must be a number > 0")
+    if args.slot is not None and not runs.NAME_RE.fullmatch(args.slot):
+        sys.exit(f"labctl run: invalid --slot {args.slot!r}: use letters, digits, '_', '-', '.'")
     harness = args.harness or os.environ.get("LABCTL_HARNESS")
     if args.brief and harness not in HARNESSES:
         sys.exit(f"labctl run: --brief starts an experimenter, so it needs --harness or $LABCTL_HARNESS "
@@ -152,7 +157,8 @@ def cmd_status(args) -> int:
     print(f"tmux:    {meta.get('tmux')}")
     st = runs.read_json(d / "status.json", {})
     pids = [f"{name} {st[key]} ({'alive' if runs.pid_alive(st[key]) else 'not running'})"
-            for name, key in (("supervisor", "supervisor_pid"), ("command", "child_pid")) if st.get(key)]
+            for name, key in (("supervisor", "supervisor_pid"), ("command", "child_pid"), ("check", "check_pid"))
+            if st.get(key)]
     if pids:
         print(f"pids:    {', '.join(pids)}")
     events = runs.read_events(d)
@@ -162,13 +168,13 @@ def cmd_status(args) -> int:
                 for e in events[-5:]], "  ")
     print("log (last 10 lines):")
     for line in runs.tail(d / "log", 10):
-        print("  " + line)
+        print("  " + wake.cap_line(line))
     return 0
 
 
 def cmd_tail(args) -> int:
-    for line in runs.tail(_run_dir(args.id) / "log", args.n):
-        print(line)
+    for line in runs.tail(_run_dir(args.id) / "log", args.n):  # long lines capped: the whole log is in runs/<id>/log
+        print(wake.cap_line(line))
     return 0
 
 

@@ -66,6 +66,16 @@ def format_wake(run_dir: Path, event: dict, lines: int = 40, inbox: int | None =
     return "\n".join([header(event, inbox)] + ["  " + line for line in body])
 
 
+def format_matches(run_dir: Path, matches: list[dict], lines: int = 40) -> str:
+    """One wake for several matches of one pattern: the last one's header, the count, the
+    first and last matched line, and the log tail. events.jsonl keeps every match."""
+    first, last = matches[0], matches[-1]
+    body = [f"matched {len(matches)} times (seq {first['seq']}-{last['seq']}), the first and the last:",
+            f"first: {cap_line(str(first.get('line')))}", f"last:  {cap_line(str(last.get('line')))}"]
+    body += [cap_line(line) for line in runs.tail(Path(run_dir) / "log", lines)]
+    return "\n".join([header(last)] + ["  " + line for line in body])
+
+
 def route(run_dir: Path, event: dict) -> str:
     """'experimenter' or 'manager'."""
     if event.get("source") != "supervisor":

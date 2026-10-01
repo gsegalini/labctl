@@ -28,12 +28,15 @@ labctl install HARNESS [--project DIR]   # write role prompts and the manager sk
 ```
 
 - `--slot NAME`: runs sharing a slot execute one at a time (an exclusive
-  `flock` on `<runs>/.slots/NAME.lock`); waiting runs are `queued`.
+  `flock` on `<runs>/.slots/NAME.lock`); waiting runs are `queued`. If a
+  supervisor dies while its command runs on, the next run stays `queued` (and
+  says why in its log) until that command is gone or cancelled.
 - `--wake-on REGEX`: every log line matching it (`re.search`) records a
   `match` event. `\r` progress updates are matched too; only the last update
   of a line is logged. A line without a newline is kept to its last 64 KiB.
 - `--stall MINUTES`: record one `stall` event after that long without output;
-  re-armed when output resumes.
+  re-armed when output resumes. Check-ins and stalls keep working if the
+  command closes its stdout and stderr.
 - `--checkin MINUTES` (repeatable, float): record one `checkin` event that long
   after the command starts (not after queueing on a slot), if it is still
   running. The launcher picks moments when the first outputs should exist
@@ -57,7 +60,8 @@ The command runs with the caller's environment plus `LABCTL_RUN_DIR`,
 process group, with stdout and stderr merged. The run ends when that process
 exits: output is read for 1 s more, then what is left of its process group
 gets SIGTERM (a daemon that called `setsid` survives but no longer holds the
-run). `cancel` sends SIGTERM to the group, then SIGKILL after 5 s.
+run). `cancel` sends SIGTERM to the group (or the `--check`'s, while it runs),
+then SIGKILL after 5 s.
 
 The supervisor runs in tmux session `labctl-<id>` (`tmux attach` to watch).
 Killing that session (SIGHUP), Ctrl-C in it (SIGINT) or `cancel` stops the run,
@@ -71,6 +75,8 @@ supervisor has started (its crash output goes to `supervisor.log`).
 Every wake starts with a header naming its source. The body is indented, so
 only the first line is a header: the event's message, or for a `match` the
 matched line, then the last 40 log lines (each cut at 500 characters).
+Several matches of one pattern in one delivery become one wake: the last
+match's header, the count, and the first and last matched line.
 
 ```
 [labctl wake] source=supervisor run=<id> event=exit code=1 check=none seq=3 time=<UTC>
@@ -96,7 +102,7 @@ verify its outputs at exit. Delivery runs in a
 detached `labctl _deliver`, so a slow agent never stalls the run. One turn at
 a time per session (`flock`; the manager lock is shared by all runs), and all
 events not yet delivered go into one turn, so a burst of matches costs a few
-turns, not one each. Messages go to the harness on stdin. `labctl attach`
+turns, not one each, and a message stays small however many there are. Messages go to the harness on stdin. `labctl attach`
 holds the session lock while a human is in the conversation; wakes queue
 until they leave. Codex is the exception: attach only waits for a running
 turn, and wakes that arrive while you are in the conversation go into it
@@ -121,7 +127,7 @@ runs/
     exit-code      exit code; 128+N if killed by signal N
     brief.md       copy of --brief
     sessions.json  experimenter / manager: harness, session id, model, started, delivered
-    wake.log       each agent delivery: command, exit code, output tail
+    wake.log       each agent delivery: command (logged before it runs), exit code, token usage, output tail
     supervisor.log supervisor errors, if any
 ```
 
@@ -159,7 +165,7 @@ Each role has a tier, and the config maps tiers to model ids per harness.
 
 | Tier | Used by |
 | --- | --- |
-| `frontier` | the manager (only used by labctl to resume a Codex manager, which does not remember its model) |
+| `frontier` | the manager (only used by labctl to resume a Codex manager headlessly, since Codex does not remember its model; a wake queued into a thread open in the app runs on that thread's own model) |
 | `strong` | implementer |
 | `cheap` | explorer and experimenter |
 
@@ -209,12 +215,26 @@ characters, and a wake carries the last 40 log lines.
 ### What the experimenter may do
 
 The experimenter runs headless with a narrow permission set: for Claude Code,
-only `labctl` and `nvidia-smi` commands and file reads and searches (`Read`,
-`Grep`, `Glob`; `--permission-mode dontAsk`); for Codex, the `workspace-write`
-sandbox; for opencode, its default in-project permissions. Its prompt limits it
-to the files the brief names, and it changes nothing: for a bug in the
-experiment it sends `labctl escalate ID --fix` and the manager has it fixed.
-Its authority beyond that comes from the run's brief.
+only the `Bash`, `Read`, `Grep` and `Glob` tools and no MCP servers (`--tools`,
+`--strict-mcp-config`), of which only `labctl` and `nvidia-smi` commands and
+file reads and searches run (`--permission-mode dontAsk`); its role prompt is
+passed again on every resume, since Claude rebuilds it after compaction. For
+Codex, the `workspace-write` sandbox; for opencode, its default in-project
+permissions. Its prompt limits it to the files the brief names, and it changes
+nothing: for a bug in the experiment it sends `labctl escalate ID --fix` and the
+manager has it fixed. It may cancel a run that clearly wastes compute unless
+the brief forbids it, and then always says why. Its authority beyond that comes
+from the run's brief.
+
+A headless manager (`--manager`) cannot push notifications: Claude's push tool
+always sees its caller as the active terminal. To be pinged on your phone, run
+the manager in a session started from the Claude app (Remote Control) with
+`labctl wait`. Codex sends no push: a wake reaches a Codex manager's thread (queued into it
+if the app has it open, on the model and settings the thread already has), and
+with the machine connected the Codex app shows that turn running and then
+finished, waiting for you. A headless
+manager is resumed without these limits: it runs
+under the project's own permission settings for its harness.
 
 ## Example
 

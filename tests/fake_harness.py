@@ -1,8 +1,8 @@
 """Fake claude / codex / opencode for tests: `fake_harness.py NAME ARGS...`.
 
 Parses its arguments the way the real CLI does (claude: `-p` is a flag, the
-prompt is the first positional or else stdin, `--allowedTools` is variadic and
-swallows following words, an unknown `-x` is an error; codex: `-` reads the
+prompt is the first positional or else stdin, `--allowedTools` and `--tools` are
+variadic and swallow following words, an unknown `-x` is an error; codex: `-` reads the
 prompt from stdin; opencode run: stdin is appended to the message), prints the
 JSON the real one prints, and appends one record per call to $FAKE_CALLS:
 argv, the prompt, cwd, start/end times. Sessions it created are kept in
@@ -29,8 +29,8 @@ import time
 
 CLAUDE_VALUE = {"--session-id", "--model", "--output-format", "--append-system-prompt",
                 "--permission-mode", "--resume", "-r"}
-CLAUDE_VARIADIC = {"--allowedTools", "--disallowedTools"}
-CLAUDE_FLAGS = {"-p", "--print"}
+CLAUDE_VARIADIC = {"--allowedTools", "--disallowedTools", "--tools"}
+CLAUDE_FLAGS = {"-p", "--print", "--strict-mcp-config"}
 
 
 def die(msg: str, code: int = 1):

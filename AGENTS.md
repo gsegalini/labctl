@@ -47,6 +47,10 @@ for behaviour, routing, run directory layout, and configuration.
   Re-verify before changing them. Known traps: Claude's `--allowedTools` is
   variadic, prompts go on stdin, Codex forgets its model on resume, and
   `--allowedTools` restricts nothing without `--permission-mode dontAsk`.
+  `--tools` is variadic too and leaves MCP servers in unless
+  `--strict-mcp-config` is given. Claude keeps a session's first system prompt
+  on resume and ignores a new `--append-system-prompt`, until the conversation
+  is compacted; then it rebuilds it from the resume's flags.
 - After changing a role or the skill, rerun `labctl install <harness>` in the
   projects that use it.
 - The login shell is zsh: quote globs and `=`-leading words in commands.
@@ -54,5 +58,6 @@ for behaviour, routing, run directory layout, and configuration.
 
 ## Not verified
 
-Codex end to end with real calls, a real Ctrl-S in a tmux pane, and runs
-longer than the soak test.
+A real Ctrl-S in a tmux pane, and runs longer than the soak test.
+`scripts/live_check.sh codex` passes but costs several times the tokens of
+claude: codex has no way to trim the experimenter's tools.

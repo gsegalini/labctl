@@ -85,8 +85,10 @@ def test_run_option_errors(root, tmp_path):
         main(["run", "--brief", str(brief), "--", "true"])
     with pytest.raises(SystemExit, match="HARNESS:SESSION_ID"):
         main(["run", "--manager", "vim:1", "--", "true"])
-    with pytest.raises(SystemExit, match="--checkin MINUTES must not be negative"):
-        main(["run", "--checkin", "-1", "--", "true"])
+    for bad in (["--checkin", "-1"], ["--checkin", "nan"], ["--stall", "0"], ["--stall", "inf"],
+                ["--slot", "../x"], ["--slot", ".hidden"]):
+        with pytest.raises(SystemExit, match=f"{bad[0]} "):
+            main(["run", *bad, "--", "true"])
     assert not root.exists() or not any(root.iterdir())
 
 

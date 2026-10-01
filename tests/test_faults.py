@@ -21,6 +21,19 @@ from labctl import agents, runs, supervisor, wake
 from labctl.cli import main
 
 HEADER = re.compile(r"^\[labctl wake\] source=\S+ run=(\S+) .*? seq=(\d+) ", re.M)
+COLLAPSED = re.compile(r"^\[labctl wake\] source=\S+ run=(\S+) .*? seq=(\d+) .*\n  matched \d+ times \(seq (\d+)-", re.M)
+
+
+def delivered_seqs(prompt: str, d) -> set[int]:
+    """Seqs of run d's events in a prompt: one per header, plus the earlier matches a collapsed wake stands for."""
+    evs = {e["seq"]: e for e in runs.read_events(d)}
+    seqs = {int(s) for run, s in HEADER.findall(prompt) if run == d.name}
+    for run, last, first in COLLAPSED.findall(prompt):
+        if run == d.name:
+            pattern = evs[int(last)].get("pattern")
+            seqs |= {s for s in range(int(first), int(last))
+                     if evs[s]["event"] == "match" and evs[s].get("pattern") == pattern}
+    return seqs
 
 
 def brief_run(root, tmp_path, script="true", h="claude", manager=None, **kw):
@@ -64,9 +77,8 @@ def check(root, d, calls, state, capsys=None):
     delivered, queued = Counter(), Counter()  # turns; `codex queue` into an open conversation (not a turn)
     ok_calls = [c for c in calls() if c.get("code") == 0 and c.get("prompt")]
     for c in ok_calls:
-        for run, seq in set(HEADER.findall(c["prompt"])):
-            if run == d.name:
-                (queued if c["argv"][:2] == ["codex", "queue"] else delivered)[int(seq)] += 1
+        for seq in delivered_seqs(c["prompt"], d):
+            (queued if c["argv"][:2] == ["codex", "queue"] else delivered)[seq] += 1
     assert all(n == 1 for n in delivered.values()), delivered
     starts = [c for c in ok_calls if is_start(c) and f"run={d.name} " in c["prompt"]]
     assert len(starts) <= 1
@@ -181,6 +193,17 @@ def test_daemonized_grandchild_does_not_hold_the_run(root, tmp_path, capsys):
         os.kill(gc, signal.SIGKILL)
 
 
+def test_closed_output_keeps_supervising(root, capsys):
+    """A command that closes its stdout and stderr still gets its check-ins and stall."""
+    d = make_run(root, "echo up; exec >&- 2>&-; sleep 2; exit 4", stall=0.01, checkin=[0.02])
+    t0 = time.monotonic()
+    supervise(d)
+    assert time.monotonic() - t0 < 4  # ends when the command does
+    assert [e["event"] for e in events(d)] == ["stall", "checkin", "exit"]
+    assert events(d, "exit")[0]["code"] == 4
+    check(root, d, lambda: [], "failed", capsys)
+
+
 def test_cancel_run_with_daemonized_grandchild(root, tmp_path):
     d = make_run(root, "setsid sleep 15 & echo $! > gc.pid; sleep 30")
     p = start(d)
@@ -210,8 +233,18 @@ def test_check_variants(root, tmp_path, capsys):
     assert p.wait(timeout=5) == 0
     wait_until(lambda: not runs.pid_alive(int((tmp_path / "check.pid").read_text())))
     [ev] = events(mid, "exit")
-    assert (ev["code"], ev["check"], ev["cancelled"], ev["ok"], ev["signal"]) == (0, None, True, False, "SIGTERM")
+    assert (ev["code"], ev["check"], ev["cancelled"], ev["ok"]) == (0, None, True, False)
+    assert "signal" not in ev  # cancel kills the check's group, as it does the command's
     check(root, mid, lambda: [], "cancelled", capsys)
+
+    # a check that ignores SIGTERM is killed after the grace period
+    deaf = make_run(root, "true", check="trap '' TERM; echo $$ > deaf.pid; sleep 30", name="deaf")
+    p = start(deaf)
+    wait_until(lambda: (tmp_path / "deaf.pid").exists() and (tmp_path / "deaf.pid").read_text().strip())
+    assert supervisor.cancel(deaf, grace=0.5) == "deaf cancelled"
+    assert p.wait(timeout=5) == 0
+    assert not runs.pid_alive(int((tmp_path / "deaf.pid").read_text()))
+    check(root, deaf, lambda: [], "cancelled", capsys)
 
 
 def test_signals_are_recorded_as_cancel(root, capsys):
@@ -388,6 +421,20 @@ def test_failed_start_that_created_the_session_is_resumed(root, tmp_path, fake_a
     assert "--session-id" in first["argv"] and second["argv"][2:4] == ["--resume", sid]
 
 
+def test_delivery_killed_mid_turn_leaves_a_trace(root, tmp_path, fake_agents, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "1.5")
+    d = brief_run(root, tmp_path)
+    seq = runs.append_event(d, "stall", minutes=1.0)["seq"]
+    p = subprocess.Popen([*runs.LABCTL, "_deliver", str(d), str(seq)])
+    wait_until(lambda: (d / "wake.log").exists() and "$ claude" in (d / "wake.log").read_text())
+    p.kill()
+    p.wait()
+    log = (d / "wake.log").read_text()
+    assert f"seq={seq} role=experimenter\n$ claude -p --session-id" in log and "\nexit " not in log
+    assert agents.load(d)["experimenter"]["delivered"] == seq  # never replayed: the trace is the record
+    wait_until(lambda: fake_agents())  # the orphaned fake harness finishes on its own
+
+
 # --- concurrency -------------------------------------------------------------
 
 def test_burst_of_matches_is_coalesced(root, tmp_path, fake_agents, monkeypatch, capsys):
@@ -402,9 +449,24 @@ def test_burst_of_matches_is_coalesced(root, tmp_path, fake_agents, monkeypatch,
     assert len(calls) <= 10, len(calls)
     spans = sorted((c["start"], c["end"]) for c in calls)
     assert all(a_end <= b_start for (_, a_end), (b_start, _) in zip(spans, spans[1:]))  # never overlapping
-    delivered = {int(s) for c in calls for _, s in HEADER.findall(c["prompt"])}
-    assert {m["seq"] for m in matches} <= delivered
+    delivered = {s for c in calls for s in delivered_seqs(c["prompt"], d)}  # a burst is collapsed into one wake
+    assert {m["seq"] for m in matches} | {events(d, "exit")[0]["seq"]} <= delivered
+    assert max(len(c["prompt"].encode()) for c in calls) < 30_000  # 300 matches cannot grow a message
     assert (d / "wake.log").read_text().count("\n== ") + 1 == len(calls)  # one harness command per turn
+
+
+def test_appends_do_not_reread_the_whole_file(root):
+    d = make_run(root, "true")
+    for _ in range(3000):
+        runs.append_event(d, "match", pattern="x", line="x" * 300)
+    t0 = time.monotonic()
+    for _ in range(200):
+        runs.append_event(d, "match", pattern="x", line="x" * 300)
+    assert time.monotonic() - t0 < 1.0
+    with open(d / "events.jsonl", "a") as f:
+        f.write('{"seq": 3201, "trunc')  # a torn last line is skipped, and not glued onto
+    assert runs.append_event(d, "stall", minutes=1.0)["seq"] == 3201
+    assert [e["seq"] for e in runs.read_events(d)] == list(range(1, 3202))
 
 
 def test_no_new_waiter_while_one_is_waiting(root, tmp_path, monkeypatch):
@@ -452,11 +514,15 @@ def test_slot_queue_cancel_and_supervisor_death(root, capsys):
     orphan = status(first)["child_pid"]
     p1.send_signal(signal.SIGKILL)
     p1.wait()
-    assert p3.wait(timeout=10) == 0  # the dead supervisor released the slot
-    assert status(third)["state"] == "succeeded"
     assert runs.state(first) == runs.UNKNOWN
+    # the lock died with the supervisor, but its command still has the slot: the next run waits
+    wait_until(lambda: "waiting for run first" in (third / "log").read_text())
+    time.sleep(1.5)
+    assert p3.poll() is None and runs.state(third) == "queued" and not (third / "exit-code").exists()
     supervisor.cancel(first, grace=1)
     wait_until(lambda: not runs.pid_alive(orphan))
+    assert p3.wait(timeout=10) == 0
+    assert status(third)["state"] == "succeeded"
     for d, state in ((first, "cancelled"), (second, "cancelled"), (third, "succeeded")):
         check(root, d, lambda: [], state, capsys)
 

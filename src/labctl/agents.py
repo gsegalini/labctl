@@ -121,6 +121,9 @@ def _run(run_dir: Path, role: str, seqs: str, cmd: tuple[list[str], str], cwd: s
     env = {**os.environ, "LABCTL_RUNS_DIR": str(run_dir.parent)}
     env.pop("CLAUDECODE", None)  # a headless turn is its own session, not a nested one
     limit = float(os.environ.get("LABCTL_HARNESS_TIMEOUT", HARNESS_TIMEOUT))
+    shown = shlex.join(a if len(a) <= 200 else a[:200] + "..." for a in argv)
+    with open(run_dir / "wake.log", "a") as f:  # before the turn: a delivery that dies midway leaves this
+        f.write(f"== {runs.now()} seq={seqs} role={role}\n$ {shown}  (message: {len(stdin_text)} chars on stdin)\n")
     start = time.monotonic()
     try:
         p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -138,10 +141,10 @@ def _run(run_dir: Path, role: str, seqs: str, cmd: tuple[list[str], str], cwd: s
             out, err = p.communicate()
             err += f"\nlabctl: harness timed out after {limit:g} s and was killed"
         r = subprocess.CompletedProcess(argv, p.returncode, out, err)
-    shown = shlex.join(a if len(a) <= 200 else a[:200] + "..." for a in argv)
+    usage = harness.usage_from(argv[0], r.stdout) if argv else None
     with open(run_dir / "wake.log", "a") as f:
-        f.write(f"== {runs.now()} seq={seqs} role={role}\n$ {shown}  (message: {len(stdin_text)} chars on stdin)\n"
-                f"exit {r.returncode} after {time.monotonic() - start:.1f} s\n")
+        f.write(f"exit {r.returncode} after {time.monotonic() - start:.1f} s (seq={seqs} role={role})\n"
+                f"usage: {usage or 'unknown'}\n")
         f.write(_tail(r.stdout + "\n" + r.stderr).strip("\n") + "\n")
     return r
 
@@ -151,7 +154,8 @@ def deliver_turn(run_dir: Path, seq: int, pending_fd: int | None = None) -> None
 
     Under the session lock, the role's cursor (`delivered`) is advanced before the
     turn, so no event is ever delivered twice; events that arrive during a turn
-    are delivered together in the next one.
+    are delivered together in the next one. A turn is logged to wake.log before it
+    runs, so one cut short (the process killed) still leaves a trace.
     """
     run_dir = Path(run_dir).resolve()
     event = next((e for e in runs.read_events(run_dir) if e["seq"] == seq), None)
@@ -172,8 +176,21 @@ def deliver_turn(run_dir: Path, seq: int, pending_fd: int | None = None) -> None
 
 
 def _message(run_dir: Path, pending: list[dict]) -> str:
-    """Each event's wake; the log tail only once, after the last one."""
-    return "\n\n".join(wake.format_wake(run_dir, e, lines=40 if e is pending[-1] else 0) for e in pending)
+    """Each event's wake, with the matches of one pattern collapsed into one wake at its last
+    match, so a burst cannot grow the message; the log tail only once, after the last wake."""
+    matches = {}
+    for e in pending:
+        if e["event"] == "match":
+            matches.setdefault(e.get("pattern"), []).append(e)
+    parts = []
+    for e in pending:
+        group = matches.get(e.get("pattern"), []) if e["event"] == "match" else []
+        if len(group) > 1 and e is not group[-1]:
+            continue
+        lines = 40 if e is pending[-1] else 0
+        parts.append(wake.format_matches(run_dir, group, lines) if len(group) > 1
+                     else wake.format_wake(run_dir, e, lines))
+    return "\n\n".join(parts)
 
 
 def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: int) -> None:
@@ -183,12 +200,17 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
     message = _message(run_dir, pending)
     h, sid = rec["harness"], rec.get("session_id")
     starting = role == "experimenter" and not rec.get("started")
+    prompt = install.load_role(role).prompt if role == "experimenter" else None  # resumes: see harness.resume
+
+    def resume():
+        return harness.resume(h, sid, message, model=rec.get("model"), role=prompt, in_git=in_git)
+
     exits = [e for e in pending if e["event"] == "exit"]
     r, queued = None, False
     try:
         if starting and sid:
             # an earlier start may have created the session before failing: resume it if it exists
-            r = _run(run_dir, role, seqs, harness.resume(h, sid, message, model=rec.get("model"), in_git=in_git), cwd)
+            r = _run(run_dir, role, seqs, resume(), cwd)
             if r.returncode and harness.session_not_found(r.stdout + r.stderr):
                 r = None
         if r is None and starting:
@@ -202,10 +224,10 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
                     f'  labctl escalate {rid} -m "<what happened, evidence, decision needed>"\n'
                     f'  labctl escalate {rid} --fix -m "<observed, evidence, cause, what the fix must achieve>"\n'
                     f"\n{message}")
-            r = _run(run_dir, role, seqs, harness.start(h, model=rec["model"], role=install.load_role(role).prompt,
+            r = _run(run_dir, role, seqs, harness.start(h, model=rec["model"], role=prompt,
                                                         message=text, session_id=sid, in_git=in_git), cwd)
         elif r is None:
-            r = _run(run_dir, role, seqs, harness.resume(h, sid, message, model=rec.get("model"), in_git=in_git), cwd)
+            r = _run(run_dir, role, seqs, resume(), cwd)
             if h == "codex" and r.returncode and "already has an active writer" in r.stderr:
                 # a person has the session open: queue the wake into their conversation
                 if role == "experimenter" and exits:

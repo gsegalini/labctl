@@ -139,15 +139,28 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def append_numbered(path: Path, key: str, build) -> dict:
-    """Append build(n) as a JSON line, n = 1 + the largest `key` so far, under an flock."""
-    with open(path, "a+") as f:
+    """Append build(n) as a JSON line, n = 1 + the last `key` so far, under an flock.
+
+    Reads the file backwards only until a numbered record turns up, so an append
+    costs the same in a file of millions of events as in an empty one.
+    """
+    with open(path, "a+b") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
-        f.seek(0)
-        text = f.read()
-        numbers = [r[key] for r in _parse_jsonl(text) if isinstance(r.get(key), int)]
-        record = build(max(numbers, default=0) + 1)
-        sep = "" if not text or text.endswith("\n") else "\n"  # never glue onto a truncated line
-        f.write(sep + json.dumps(record) + "\n")
+        end = f.seek(0, os.SEEK_END)
+        pos, data, last = end, b"", 0
+        while pos > 0 and not last:
+            pos = max(0, pos - 65536)
+            f.seek(pos)
+            data = f.read(end - pos)
+            lines = data.split(b"\n")
+            # the first line of a chunk may be cut off, unless the chunk starts the file
+            for r in reversed(_parse_jsonl(b"\n".join(lines if pos == 0 else lines[1:]).decode(errors="replace"))):
+                if isinstance(r.get(key), int):
+                    last = r[key]
+                    break
+        record = build(last + 1)
+        sep = b"" if not end or data.endswith(b"\n") else b"\n"  # never glue onto a truncated line
+        f.write(sep + json.dumps(record).encode() + b"\n")
     return record
 
 

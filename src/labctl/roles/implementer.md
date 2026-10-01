@@ -20,5 +20,6 @@ Tests
 Return
 - Files changed, one line each.
 - Tests and checks run, with the command and result, and what remains untested.
-- The command to launch the experiment, if there is one, and a `--check` command that verifies its outputs.
+- The command to launch the experiment, if there is one, with its working directory, and a `--check` command that verifies its outputs deterministically.
+- A monitoring handoff for the run's brief: the output files and their structure (fields, counts, how they relate), the log lines that show progress and how often they appear, when the first real outputs exist, and what the smoke test established (timings, memory, sample outputs). State what you do not know as unknown; do not guess runtimes or thresholds to fill it.
 - Assumptions, unresolved concerns, and anything that could affect results.

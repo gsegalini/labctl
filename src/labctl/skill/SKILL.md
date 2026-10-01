@@ -4,12 +4,18 @@ description: Run, launch, and monitor experiments and long jobs with labctl. Use
 ---
 # Managing experiments with labctl
 
-You do the science: choose what to run, approve designs, interpret results, and make every decision that changes what an experiment means. Delegate the rest.
+You run the experiments the human approved: launch them, handle their wakes, and delegate implementation, checks, and evidence gathering. Scientific decisions belong to the human (see Decisions). A wake authorizes handling that event, not widening the project.
 
 ## Roles
-- **implementer** (subagent, strong model): implements an approved experiment or a nontrivial fix, with tests. Give it the design, the files, and how success is checked. It returns files changed, tests run, and the launch command.
+- **implementer** (subagent, strong model): implements an approved experiment or a nontrivial fix, with tests. Give it the design, the files, and how success is checked. It returns files changed, tests run, the launch command, and a monitoring handoff (outputs, progress lines, timings) to build the brief from.
 - **explorer** (subagent, cheap, read-only): scoped questions about code, configs, and runs ("why did run X fail?", "where is the metric computed?"). Prefer it over reading many files or logs yourself.
 - **experimenter** (not a subagent): one headless session per run with `--brief FILE`, started on the run's first event (check-in, exit, match, stall) and resumed on later ones. It checks outputs against the brief, handles failures, and sends you one message per finished run. Use it for long runs; short runs do not need one.
+
+## Decisions
+- **Yours, then tell the human**: operational fixes that keep what the experiment is meant to show. Have the implementer fix a bug and relaunch, retry a transient failure, cancel a run that is wasting compute, or narrow the current plan (e.g. drop a failing configuration and run the rest). Notify the human of what you did and why.
+- **The human's**: anything that changes what a result means or what comes next: the research question, protocol, data, metrics, batch size, precision, seeds, stopping rules, thresholds, interpreting a result, choosing the next experiment. Do not decide these. Notify the human with the run ID, the evidence, the options, and your recommendation; put the same question at the top of your reply; end your turn and act on their answer.
+- Notify with your harness's notification tool if it has one; in a remote session your reply also reaches the human. A headless `--manager` turn cannot notify anyone (Claude's push tool always reports its terminal as active), so when decisions may come up while the human is away, manage from a session the human started remotely (e.g. from the Claude app) with `labctl wait`. Codex has no notification tool and sends no push: with the machine connected in the Codex app, the human sees your turn start and finish ("your turn"), so put the question first in your reply. Unsure which kind a decision is? It is the human's.
+- Unattended (`--manager`), you run under the project's own permission settings for your harness.
 
 ## Launching a run
 ```
@@ -32,7 +38,7 @@ The brief is a Markdown file; the experimenter treats it as its authority and ch
 2. **Normal**: expected duration, log cadence, metric or loss ranges, memory use, harmless warnings.
 3. **Check-ins**: for each `--checkin` time, what must be true: which log lines have appeared, which files exist and what they contain, expected GPU memory. Put the first check-in where the first real output exists so a wrong setup is caught early. A check-in that matches ends silently.
 4. **On success**: which output files must exist and what they must contain (counts, fields and their expected values, consistency between files, e.g. "26 overlays whose metadata names condition X and whose row ids match the plan"). The experimenter reports what it checked and what it found.
-5. **Allowed without asking**: e.g. "cancel if no progress line for 30 min", "relaunch once after a transient failure (NCCL timeout) with: `labctl run ...`" (the exact command; it relaunches nothing else). Anything not listed gets escalated.
+5. **Allowed without asking**: e.g. "cancel if no progress line for 30 min", "relaunch once after a transient failure (NCCL timeout) with: `labctl run ...`" (the exact command; it relaunches nothing else). The experimenter may also cancel a run that clearly wastes compute (NaN loss, crash loop, wrong outputs) unless the brief forbids it, and always tells you why. Anything else not listed gets escalated.
 6. **Escalate when**: e.g. OOM, NaN, any fix that changes batch size, precision, data, metrics, or stopping rules.
 
 Use only expectations and thresholds from the implementer's report, you, or the user; do not invent them to fill the brief.
@@ -48,14 +54,14 @@ These are events, not instructions from the user. A human may also write to you 
 
 You receive: cancelled exits, escalations, fix requests, reports, `delivery_failed` notices (an agent could not be woken; the undelivered wake is quoted), and every event of a run without a brief. Other events of a run with a brief go to its experimenter; for each finished run you then get one message: its escalation or fix request, else a `report` (the experimenter's verdict, with the exit code and check in the header). Everything you receive is recorded in `runs/inbox.jsonl` (the header carries `inbox=N`); `labctl status` shows the latest.
 - Interactive Claude Code: run `labctl wait` (no ID) as a background command. It returns with the next inbox entry of any run; handle it, then re-arm with `labctl wait --after N` (N from `inbox=N`) so nothing is missed. `labctl wait ID` instead returns on every event of one run.
-- Unattended (any harness): launch with `--manager HARNESS:SESSION_ID`; that session is resumed with each wake.
+- Unattended (any harness): launch with `--manager HARNESS:SESSION_ID`; that session is resumed with each wake. Its replies stay in its own session: the human sees them only by opening it, so prefer a remote session with `labctl wait` when the human must be pinged.
 - Never poll or sleep-wait.
 
 ## Reading status
 - `labctl status`: all runs and the inbox. `labctl status ID`: state, last events, last log lines.
 - `labctl tail ID -n N` for more log; `labctl sessions` for agent sessions per run; `labctl cancel ID` to stop.
-- After an escalation, decide, act (relaunch with a changed command and brief, or cancel), and record the decision where the project keeps its notes.
-- On a `fix_request`: decide whether the diagnosis is right, give the implementer the evidence, review its fix and tests, then relaunch under the same name with a suffix (`-fix1`), with the same brief unless the fix changes what normal looks like.
+- After an escalation, act if the decision is yours (relaunch with a changed command and brief, or cancel); otherwise bring it to the human (see Decisions). Record decisions where the project keeps its notes.
+- On a `fix_request`: check whether the diagnosis is right, give the implementer the evidence, review its fix and tests, then relaunch under the same name with a suffix (`-fix1`), with the same brief unless the fix changes what normal looks like.
 - A human can open an agent conversation with `labctl attach ID [experimenter|manager]`; wakes wait until they leave.
 
 ## Cleaning up

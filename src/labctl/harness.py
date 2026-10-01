@@ -9,8 +9,11 @@ import json
 
 from labctl.install import toml_str
 
-CLAUDE_TOOLS = ["--permission-mode", "dontAsk", "--allowedTools", "Bash(labctl:*)", "Bash(nvidia-smi:*)",
-                "Read", "Grep", "Glob"]
+# The experimenter's whole tool surface: --tools limits what exists (no MCP servers, no
+# subagents, no edits), dontAsk + --allowedTools what runs without asking. About half the
+# input tokens of a turn with the default tools.
+CLAUDE_TOOLS = ["--tools", "Bash,Read,Grep,Glob", "--strict-mcp-config", "--permission-mode", "dontAsk",
+                "--allowedTools", "Bash(labctl:*)", "Bash(nvidia-smi:*)", "Read", "Grep", "Glob"]
 CODEX_NET = ["-c", "sandbox_workspace_write.network_access=true"]
 MAX_ARG = 100_000  # bytes; Linux refuses a single argv element above 128 KiB
 
@@ -40,10 +43,16 @@ def start(harness: str, *, model: str, role: str, message: str, session_id: str 
     raise ValueError(f"unknown harness {harness!r}")
 
 
-def resume(harness: str, session_id: str, message: str, *, model: str | None = None,
+def resume(harness: str, session_id: str, message: str, *, model: str | None = None, role: str | None = None,
            in_git: bool = True) -> tuple[list[str], str]:
+    """A later turn. `role`: the experimenter's role prompt; None for a manager, whose session
+    runs under the project's own permission settings."""
     if harness == "claude":
-        return ["claude", "-p", "--resume", session_id, "--output-format", "json", *CLAUDE_TOOLS], message
+        if role is None:
+            return ["claude", "-p", "--resume", session_id, "--output-format", "json"], message
+        # claude ignores a new system prompt on resume, but rebuilds it from the flags after compaction
+        return (["claude", "-p", "--resume", session_id, "--output-format", "json",
+                 "--append-system-prompt", _check_arg("role prompt", role), *CLAUDE_TOOLS], message)
     if harness == "codex":  # codex does not keep the model across resumes
         return (["codex", "exec", "resume", "--json", "-m", model, "-c", 'sandbox_mode="workspace-write"',
                  *CODEX_NET, *_git_flag(in_git), session_id, "-"], message)
@@ -54,8 +63,12 @@ def resume(harness: str, session_id: str, message: str, *, model: str | None = N
 
 def codex_queue(session_id: str, message: str) -> tuple[list[str], str]:
     """Deliver into a codex session that is open interactively (argv only: bounded)."""
-    if len(message.encode()) > MAX_ARG:
-        message = message.encode()[:MAX_ARG - 100].decode(errors="ignore") + "\n[labctl: message truncated]"
+    data = message.encode()
+    if len(data) > MAX_ARG:  # keep both ends: the last event and the log tail come last
+        half = (MAX_ARG - 100) // 2
+        head = data[:half].decode(errors="ignore")
+        tail = data[-half:].decode(errors="ignore").partition("\n")[2]  # no partial line: it could forge a header
+        message = f"{head}\n[labctl: message truncated]\n{tail}"
     return ["codex", "queue", "--thread", session_id, f"--message={message}"], ""
 
 
@@ -118,3 +131,36 @@ def reply_from(harness: str, stdout: str) -> tuple[str | None, bool]:
                 reply = part["text"]
             error = error or kind == "error"
     return (reply if isinstance(reply, str) else None), error
+
+
+def _usage_line(inp: int, cached: int, out: int, cost=None) -> str:
+    """input counts cached tokens too, as claude and codex report it."""
+    return (f"input={inp} (cached {cached}) output={out}"
+            + (f" cost_usd={cost:.4f}" if isinstance(cost, (int, float)) else ""))
+
+
+def usage_from(harness: str, stdout: str) -> str | None:
+    """Token usage reported by the turn, as one line, or None if the harness reported none."""
+    if harness == "opencode":  # one step_finish per model call: add them up
+        steps = [obj["part"] for obj in json_objects(stdout)
+                 if obj.get("type") == "step_finish" and isinstance(obj.get("part"), dict) and obj["part"].get("tokens")]
+        if not steps:
+            return None
+        inp = cached = out = cost = 0
+        for part in steps:
+            t, cache = part["tokens"], part["tokens"].get("cache") or {}
+            hit = cache.get("read", 0) + cache.get("write", 0)
+            inp, cached, out = inp + t.get("input", 0) + hit, cached + hit, out + t.get("output", 0)
+            cost += part.get("cost") or 0
+        return _usage_line(inp, cached, out, cost)
+    for obj in reversed(json_objects(stdout)):
+        kind = obj.get("type")
+        if harness == "claude" and kind == "result" and obj.get("usage"):
+            u = obj["usage"]
+            cached = u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+            return _usage_line(u.get("input_tokens", 0) + cached, cached, u.get("output_tokens", 0),
+                               obj.get("total_cost_usd"))
+        if harness == "codex" and kind == "turn.completed" and obj.get("usage"):
+            u = obj["usage"]
+            return _usage_line(u.get("input_tokens", 0), u.get("cached_input_tokens", 0), u.get("output_tokens", 0))
+    return None

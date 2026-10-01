@@ -19,6 +19,7 @@ from labctl.wake import emit
 MAX_PENDING = 65536  # bytes of an unterminated line kept in memory
 DRAIN_SECONDS = 1.0  # output still read after the main process exits
 EXIT_POLL_SECONDS = 0.5  # how often a silent run is checked for having exited
+ORPHAN_POLL_SECONDS = 1.0  # how often a slot checks whether a dead supervisor's command has exited
 
 
 class Cancelled(Exception):
@@ -69,10 +70,16 @@ def supervise(run_dir: Path) -> int:
         if meta["slot"]:
             slots = run_dir.parent / ".slots"
             slots.mkdir(exist_ok=True)
-            lock = open(slots / f"{meta['slot']}.lock", "w")
+            lock = open(slots / f"{meta['slot']}.lock", "a+")  # holds the last holder's run dir
             waiting = True
             fcntl.flock(lock, fcntl.LOCK_EX)  # held until we exit
+            lock.seek(0)
+            prev = lock.read().strip()
+            _wait_for_orphan(Path(prev) if prev else None, meta["slot"], log)
             waiting = False
+            lock.truncate(0)
+            lock.write(f"{run_dir}\n")
+            lock.flush()
         if cancel_path.exists():
             raise Cancelled
         status.update(state="running", started=runs.now())
@@ -103,6 +110,10 @@ def supervise(run_dir: Path) -> int:
             p = subprocess.Popen(meta["check"], shell=True, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL,
                                  stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             active[0] = p.pid
+            if cancel_path.exists():  # cancel arrived while the check was starting
+                _killpg(p.pid, signal.SIGTERM)
+            status["check_pid"] = p.pid  # so that `cancel` can kill a check that ignores SIGTERM
+            runs.write_json(status_path, status)
             status["check_code"] = p.wait()
             check = "passed" if p.returncode == 0 else "failed"
     log.close()
@@ -120,6 +131,25 @@ def supervise(run_dir: Path) -> int:
     if lock:
         lock.close()
     return 0
+
+
+def _orphaned_groups(prev: Path) -> list[int]:
+    """Process groups of a run whose supervisor died while they still run."""
+    st = runs.read_json(prev / "status.json", {})
+    if st.get("state") in runs.FINAL:
+        return []
+    return [g for g in (st.get("child_pid"), st.get("check_pid")) if g and _killpg(g, 0)]
+
+
+def _wait_for_orphan(prev: Path | None, slot: str, log) -> None:
+    """The slot's lock dies with its supervisor, not with the command: wait for that."""
+    told = False
+    while prev and (groups := _orphaned_groups(prev)):
+        if not told:
+            _write_line(log, f"[labctl] slot {slot}: waiting for run {prev.name}, whose supervisor died while "
+                             f"its process group {groups[0]} still runs (`labctl cancel {prev.name}` ends it)".encode())
+            told = True
+        time.sleep(ORPHAN_POLL_SECONDS)
 
 
 def _write_line(log, line: bytes) -> None:
@@ -156,7 +186,7 @@ def _stream(proc, log, meta, run_dir: Path) -> None:
 
     # The run ends when the main process exits: a daemonized grandchild that
     # keeps the pipe open gets DRAIN_SECONDS more, then its group is killed.
-    drain_until = None
+    drain_until, fds = None, [fd]
     while True:
         now = time.monotonic()
         deadlines = [now + EXIT_POLL_SECONDS] if drain_until is None else [drain_until]
@@ -164,8 +194,18 @@ def _stream(proc, log, meta, run_dir: Path) -> None:
             deadlines.append(last + stall * 60)
         if checkins and drain_until is None:
             deadlines.append(started + checkins[0] * 60)
-        ready, _, _ = select.select([fd], [], [], max(0.0, min(deadlines) - now))
+        timeout = max(0.0, min(deadlines) - now)
+        if fds:
+            ready, _, _ = select.select(fds, [], [], timeout)
+        else:  # the output closed but the command lives on: its timers still run
+            ready = []
+            try:
+                proc.wait(timeout)
+            except subprocess.TimeoutExpired:
+                pass
         if drain_until is None and proc.poll() is not None:
+            if not fds:
+                break
             drain_until = time.monotonic() + DRAIN_SECONDS
         now = time.monotonic()
         while checkins and drain_until is None and now >= started + checkins[0] * 60:
@@ -179,7 +219,10 @@ def _stream(proc, log, meta, run_dir: Path) -> None:
             continue
         data = os.read(fd, 65536)
         if not data:
-            break
+            if proc.poll() is not None:
+                break
+            fds = []
+            continue
         last, stalled = time.monotonic(), False
         *lines, buf = (buf + data).split(b"\n")
         for line in lines:
@@ -216,12 +259,14 @@ def cancel(run_dir: Path, grace: float = 5.0) -> str:
     if st.get("state") in runs.FINAL:
         return f"{run_dir.name} already {st['state']}"
     (run_dir / "cancel").touch()
-    sup, child = st.get("supervisor_pid"), st.get("child_pid")
-    if child and _killpg(child, signal.SIGTERM):
+    sup = st.get("supervisor_pid")
+    groups = [g for g in (st.get("child_pid"), st.get("check_pid")) if g and _killpg(g, signal.SIGTERM)]
+    if groups:  # the command, or the check after it
         deadline = time.monotonic() + grace
-        while _killpg(child, 0) and time.monotonic() < deadline:
+        while any(_killpg(g, 0) for g in groups) and time.monotonic() < deadline:
             time.sleep(0.1)
-        _killpg(child, signal.SIGKILL)
+        for g in groups:
+            _killpg(g, signal.SIGKILL)
     elif runs.pid_alive(sup):
         os.kill(sup, signal.SIGTERM)  # queued: the supervisor records it and exits
 
