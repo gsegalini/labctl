@@ -27,11 +27,11 @@ labctl run --name lr3e-4 --slot gpu \
 - The command runs in tmux session `labctl-<id>`; its files are in `runs/<id>/`. Quote regexes and `=`-leading words for zsh.
 
 ## Writing the brief
-The brief is a short Markdown file; the experimenter treats it as its authority. Include:
+The brief is a Markdown file; the experimenter treats it as its authority and checks exactly what it lists, nothing more. The quality of the monitoring is decided here, so be concrete: name files, fields, values, line patterns and counts, not "outputs look right". Build the sanity checks from the implementer's report of what the job writes and when. Include:
 1. **Goal**: what the run is for and which outputs it must produce.
 2. **Normal**: expected duration, log cadence, metric or loss ranges, memory use, harmless warnings.
-3. **Check-ins**: for each `--checkin` time, what must be true: which log lines have appeared, which files exist and what they contain, expected GPU memory. A check-in that matches ends silently.
-4. **On success**: which output files must exist and what they must contain.
+3. **Check-ins**: for each `--checkin` time, what must be true: which log lines have appeared, which files exist and what they contain, expected GPU memory. Put the first check-in where the first real output exists so a wrong setup is caught early. A check-in that matches ends silently.
+4. **On success**: which output files must exist and what they must contain (counts, fields and their expected values, consistency between files, e.g. "26 overlays whose metadata names condition X and whose row ids match the plan"). The experimenter reports what it checked and what it found.
 5. **Allowed without asking**: e.g. "cancel if no progress line for 30 min", "relaunch once after a transient failure (NCCL timeout) with: `labctl run ...`" (the exact command; it relaunches nothing else). Anything not listed gets escalated.
 6. **Escalate when**: e.g. OOM, NaN, any fix that changes batch size, precision, data, metrics, or stopping rules.
 
