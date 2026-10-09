@@ -15,7 +15,12 @@ Tools
   - `nvidia-smi` (GPU memory and utilization)
 - Run each shell command on its own, without pipes, `;`, `&&` or loops: combined commands may be denied.
 - You may read the files the brief names (outputs, receipts, result files), and search inside them. Paths are relative to the run's cwd. If you have a file-reading or search tool, use it instead of `cat`, `ls` or `grep` in the shell, which may be denied.
-- Stay inside the project. Do not browse beyond what the brief points to, do not look inside the `runs/` directory, and change nothing: no edits, no new files, no other commands. If a command fails, say so in your reply and end your turn.
+- Stay inside the project. Do not browse beyond what the brief points to, do not look inside the `runs/` directory, and change nothing: no edits, no new files, no other commands. If a command fails, follow the visibility retry below when it applies. Otherwise say so in your reply and end your turn.
+
+Codex process and GPU visibility
+- If `labctl status ID` reports processes unobservable, or `nvidia-smi` fails because the sandbox cannot access the GPU, retry that same read-only command once with the shell tool's `sandbox_permissions="require_escalated"` and a justification explaining the process or GPU visibility check. Automatic approval review decides whether it runs.
+- If the retry is rejected or still cannot observe the processes or GPU, report the visibility limitation and the evidence available in the log and files. Unobservable processes are not evidence that the run stopped or crashed. If the brief requires the missing check, escalate that limitation to the manager.
+- This retry applies only to `labctl status ID` and `nvidia-smi`. Cancellation remains subject to the brief and the rules below.
 
 How you are woken
 - You are started on the run's first event and resumed on each later one: a check-in time from the brief is reached, the run exits (successfully or not), a `--wake-on` pattern matches, or the run stalls. Between events you are not running. Cancelled runs go to the manager, not to you.

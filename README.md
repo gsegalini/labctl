@@ -226,7 +226,13 @@ only the `Bash`, `Read`, `Grep` and `Glob` tools and no MCP servers (`--tools`,
 `--strict-mcp-config`), of which only `labctl` and `nvidia-smi` commands and
 file reads and searches run (`--permission-mode dontAsk`); its role prompt is
 passed again on every resume, since Claude rebuilds it after compaction. For
-Codex, the `workspace-write` sandbox; for opencode, its default in-project
+Codex, the `workspace-write` sandbox with explicit `approval_policy="on-request"`
+and `approvals_reviewer="auto_review"` on experimenter start and resume. When
+processes are unobservable or GPU access fails in that sandbox, the experimenter
+requests one automatically reviewed retry of the same read-only `labctl status`
+or `nvidia-smi` command outside it. A rejected retry is a visibility limitation,
+not evidence that training stopped. Manager resumes keep the project's approval
+settings. For opencode, its default in-project
 permissions. Its prompt limits it to the files the brief names, and it changes
 nothing: for a bug in the experiment it sends `labctl escalate ID --fix` and the
 manager has it fixed. It may cancel a run that clearly wastes compute unless

@@ -108,3 +108,13 @@ def test_marker_is_in_every_file(tmp_path):
     for harness in ["claude", "codex", "opencode"]:
         for path in install(harness, tmp_path / harness):
             assert MARKER in path.read_text()
+
+
+def test_experimenter_visibility_retry_in_installed_codex_role(tmp_path):
+    install("codex", tmp_path)
+    _, prompt = parse_agent("codex", agent_files("codex", tmp_path)["experimenter"])
+    assert 'sandbox_permissions="require_escalated"' in prompt
+    assert "retry that same read-only command once" in prompt
+    assert "Automatic approval review decides whether it runs" in prompt
+    assert "Unobservable processes are not evidence that the run stopped or crashed" in prompt
+    assert "Cancellation remains subject to the brief" in prompt

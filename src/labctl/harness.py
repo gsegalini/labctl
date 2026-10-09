@@ -14,6 +14,7 @@ from labctl.install import toml_str
 # input tokens of a turn with the default tools.
 CLAUDE_TOOLS = ["--tools", "Bash,Read,Grep,Glob", "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--allowedTools", "Bash(labctl:*)", "Bash(nvidia-smi:*)", "Read", "Grep", "Glob"]
+CODEX_APPROVALS = ["-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"']
 CODEX_NET = ["-c", "sandbox_workspace_write.network_access=true"]
 MAX_ARG = 100_000  # bytes; Linux refuses a single argv element above 128 KiB
 
@@ -37,7 +38,7 @@ def start(harness: str, *, model: str, role: str, message: str, session_id: str 
     if harness == "codex":
         instructions = _check_arg("role prompt", f"developer_instructions={toml_str(role)}")
         return (["codex", "exec", "--json", "-m", model, "-c", instructions, "-s", "workspace-write",
-                 *CODEX_NET, *_git_flag(in_git), "-"], message)
+                 *CODEX_APPROVALS, *CODEX_NET, *_git_flag(in_git), "-"], message)
     if harness == "opencode":  # no system-prompt flag: the role opens the first message
         return ["opencode", "run", "--format", "json", "-m", model], f"{role}\n\n{message}"
     raise ValueError(f"unknown harness {harness!r}")
@@ -55,7 +56,7 @@ def resume(harness: str, session_id: str, message: str, *, model: str | None = N
                  "--append-system-prompt", _check_arg("role prompt", role), *CLAUDE_TOOLS], message)
     if harness == "codex":  # codex does not keep the model across resumes
         return (["codex", "exec", "resume", "--json", "-m", model, "-c", 'sandbox_mode="workspace-write"',
-                 *CODEX_NET, *_git_flag(in_git), session_id, "-"], message)
+                 *(CODEX_APPROVALS if role is not None else []), *CODEX_NET, *_git_flag(in_git), session_id, "-"], message)
     if harness == "opencode":
         return ["opencode", "run", "--format", "json", "-s", session_id], message
     raise ValueError(f"unknown harness {harness!r}")

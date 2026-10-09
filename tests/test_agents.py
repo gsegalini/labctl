@@ -128,6 +128,10 @@ def test_lazy_start_then_resume(root, tmp_path, fake_agents, monkeypatch, h, exp
     first, second = fake_agents()
     model, role = model_for(h, load_role("experimenter").tier), load_role("experimenter").prompt
     assert first["argv"] == harness.start(h, model=model, role=role, message="", session_id=sid, in_git=False)[0]
+    if h == "codex":
+        for call in (first, second):
+            assert 'approval_policy="on-request"' in call["argv"]
+            assert 'approvals_reviewer="auto_review"' in call["argv"]
     brief_at = first["prompt"].index(f"Brief for labctl run {d.name}:")
     assert (role in first["prompt"]) == (h == "opencode")
     assert "BRIEF: keep it alive" in first["prompt"] and "matched: boom!" in first["prompt"]
@@ -332,6 +336,7 @@ def test_builders_pass_the_message_on_stdin():
     argv, stdin = harness.start("codex", model="M", role="line1\nline2\n", message="MSG", in_git=True)
     assert (argv, stdin) == (["codex", "exec", "--json", "-m", "M", "-c",
                               "developer_instructions='''\nline1\nline2\n'''", "-s", "workspace-write",
+                              "-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"',
                               "-c", "sandbox_workspace_write.network_access=true", "-"], "MSG")
     assert "--skip-git-repo-check" in harness.start("codex", model="M", role="R", message="MSG", in_git=False)[0]
     assert harness.resume("codex", "T", "MSG", model="M", in_git=False) == (
@@ -438,3 +443,19 @@ def test_first_message_names_the_run_and_its_commands(root, tmp_path, fake_agent
     for cmd in ("labctl status cmds", "labctl tail cmds -n 100", "labctl cancel cmds", "labctl escalate cmds -m",
                 "labctl escalate cmds --fix -m"):
         assert cmd in prompt
+
+
+@pytest.mark.parametrize("resuming", [False, True])
+def test_codex_experimenter_explicit_auto_review(resuming):
+    if resuming:
+        argv, _ = harness.resume("codex", "T", "MSG", model="M", role="R")
+    else:
+        argv, _ = harness.start("codex", model="M", role="R", message="MSG")
+    assert 'approval_policy="on-request"' in argv
+    assert 'approvals_reviewer="auto_review"' in argv
+    assert 'sandbox_mode="workspace-write"' in argv or "workspace-write" in argv
+
+
+def test_codex_manager_keeps_project_approval_policy():
+    argv, _ = harness.resume("codex", "T", "MSG", model="M")
+    assert not any(arg.startswith(("approval_policy=", "approvals_reviewer=")) for arg in argv)
