@@ -180,7 +180,7 @@ Each role has a tier, and the config maps tiers to model ids per harness.
 [claude]            # aliases (fable, opus, sonnet, haiku) or full model ids
 frontier = "fable"
 strong = "opus"
-cheap = "sonnet"
+cheap = "claude-haiku-5-5"
 
 [codex]             # bare model ids
 frontier = "gpt-6-astra"
@@ -195,8 +195,9 @@ cheap = "opencode-go/mimo-v2.6-flash"
 
 The file is optional. Any key it sets overrides the packaged default in
 `src/labctl/defaults.toml`; missing keys keep the default. The packaged
-opencode defaults name an `anthropic/` provider, so set `[opencode]` if your
-opencode does not have that provider.
+opencode defaults use `anthropic/` for the frontier and strong tiers and
+`opencode-go/mimo-v2.6-flash` for the cheap tier; override tiers whose providers
+your opencode does not have.
 
 The model is fixed where it is used: `install` writes it into the role files,
 and `labctl run --brief` records the experimenter's model in the run's

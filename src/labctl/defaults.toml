@@ -4,7 +4,7 @@
 [claude]
 frontier = "fable"
 strong = "opus"
-cheap = "haiku"
+cheap = "claude-haiku-5-5"
 
 [codex]
 # Taken from ~/.codex on the development machine: main model, implementer role,
@@ -17,4 +17,4 @@ cheap = "gpt-6-luna"
 # Defaults to adjust: check `opencode models` for the ids your providers offer.
 frontier = "anthropic/claude-fable-5-1"
 strong = "anthropic/claude-opus-5-5"
-cheap = "anthropic/claude-haiku-4-5-20251001"
+cheap = "opencode-go/mimo-v2.6-flash"
