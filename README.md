@@ -188,16 +188,15 @@ strong = "gpt-6.1-sol"
 cheap = "gpt-6-luna"
 
 [opencode]          # provider/model, as listed by `opencode models`
-frontier = "opencode-go/kimi-k3"
-strong = "opencode-go/mimo-v2.6-pro"
+frontier = "opencode-go/glm-5.3"
+strong = "opencode-go/deepseek-v4.1-flash"
 cheap = "opencode-go/mimo-v2.6-flash"
 ```
 
 The file is optional. Any key it sets overrides the packaged default in
 `src/labctl/defaults.toml`; missing keys keep the default. The packaged
-opencode defaults use `anthropic/` for the frontier and strong tiers and
-`opencode-go/mimo-v2.6-flash` for the cheap tier; override tiers whose providers
-your opencode does not have.
+opencode defaults use the `opencode-go/` provider for every tier; override
+`[opencode]` if your installation uses another provider.
 
 The model is fixed where it is used: `install` writes it into the role files,
 and `labctl run --brief` records the experimenter's model in the run's

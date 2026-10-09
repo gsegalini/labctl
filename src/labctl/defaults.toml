@@ -15,6 +15,6 @@ cheap = "gpt-6-luna"
 
 [opencode]
 # Defaults to adjust: check `opencode models` for the ids your providers offer.
-frontier = "anthropic/claude-fable-5-1"
-strong = "anthropic/claude-opus-5-5"
+frontier = "opencode-go/glm-5.3"
+strong = "opencode-go/deepseek-v4.1-flash"
 cheap = "opencode-go/mimo-v2.6-flash"
