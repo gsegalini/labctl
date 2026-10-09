@@ -54,6 +54,13 @@ labctl install HARNESS [--project DIR]   # write role prompts and the manager sk
 - `status` never relaunches anything. A run that claims to be `queued` or
   `running` without a live supervisor is `unknown (supervisor not running)`;
   one still `starting` after 30 s is `unknown (supervisor never started)`.
+  Supervisors record their Linux PID namespace in `status.json`. From a different
+  namespace (including a Codex sandbox), status shows the recorded state with
+  `processes unobservable` and never calls those PIDs alive or stopped. Active
+  older receipts without namespace provenance are also unobservable. Finished
+  states remain authoritative. `cancel` refuses to signal unobservable PIDs:
+  use the originating host, or stop the original tmux session for an older run.
+  A slot refuses to launch behind an orphan whose PIDs it cannot observe.
 
 The command runs with the caller's environment plus `LABCTL_RUN_DIR`,
 `LABCTL_RUN_ID`, `LABCTL_RUNS_DIR` and `PYTHONUNBUFFERED=1`, in its own

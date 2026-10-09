@@ -2,6 +2,8 @@ import os
 import signal
 import subprocess
 
+import pytest
+
 from conftest import events, make_run, start, status, supervise, wait_until
 
 from labctl import runs, supervisor, wake
@@ -179,7 +181,7 @@ def test_cancel_with_dead_supervisor(root):
     child = subprocess.Popen(["sleep", "100"], start_new_session=True)
     dead = subprocess.Popen(["true"])
     dead.wait()
-    runs.write_json(d / "status.json", {"state": "running", "supervisor_pid": dead.pid, "child_pid": child.pid})
+    runs.write_json(d / "status.json", {"state": "running", "pid_namespace": runs.pid_namespace(), "supervisor_pid": dead.pid, "child_pid": child.pid})
     supervisor.cancel(d, grace=0.5)  # our unreaped child stays in its group, so SIGKILL follows
     assert child.wait(timeout=5) == -signal.SIGTERM
     assert status(d)["state"] == "cancelled"
@@ -227,3 +229,20 @@ def test_tail_reads_last_lines(tmp_path):
 def test_pid_alive():
     assert runs.pid_alive(os.getpid())
     assert not runs.pid_alive(None)
+
+
+def test_orphaned_groups_foreign_namespace(root, monkeypatch):
+    d = make_run(root, "true")
+    runs.write_json(d / "status.json", {"state": "running", "child_pid": os.getpid(),
+                                       "pid_namespace": "pid:[foreign]"})
+    def forbidden(*args):
+        pytest.fail("must not probe a group from another PID namespace")
+    monkeypatch.setattr(os, "killpg", forbidden)
+    with pytest.raises(ValueError, match="different PID namespace"):
+        supervisor._orphaned_groups(d)
+
+
+def test_supervisor_records_pid_namespace(root):
+    d = make_run(root, "true")
+    supervise(d)
+    assert status(d)["pid_namespace"] == runs.pid_namespace()

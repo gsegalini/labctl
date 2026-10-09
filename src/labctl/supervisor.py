@@ -46,7 +46,7 @@ def supervise(run_dir: Path) -> int:
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
 
     status = {"state": "queued" if meta["slot"] else "running", "supervisor_pid": os.getpid(),
-              "child_pid": None, "started": None, "finished": None}
+              "pid_namespace": runs.pid_namespace(), "child_pid": None, "started": None, "finished": None}
     runs.write_json(status_path, status)
     proc, waiting = None, False
     active = [None]  # process group of what runs now: the command, then the check
@@ -138,6 +138,8 @@ def _orphaned_groups(prev: Path) -> list[int]:
     st = runs.read_json(prev / "status.json", {})
     if st.get("state") in runs.FINAL:
         return []
+    if any(st.get(k) for k in ("child_pid", "check_pid")) and (issue := runs.namespace_issue(st)):
+        raise ValueError(f"cannot check orphaned run {prev.name}: {issue}; inspect it from its originating host")
     return [g for g in (st.get("child_pid"), st.get("check_pid")) if g and _killpg(g, 0)]
 
 
@@ -254,10 +256,13 @@ def _killpg(pgid: int, sig) -> bool:
 def cancel(run_dir: Path, grace: float = 5.0) -> str:
     """Kill the run's process group and make sure the cancellation is recorded."""
     run_dir = Path(run_dir)
-    (run_dir / ".env.json").unlink(missing_ok=True)  # a supervisor that never started leaves it
     st = runs.read_json(run_dir / "status.json", {})
     if st.get("state") in runs.FINAL:
         return f"{run_dir.name} already {st['state']}"
+    if any(st.get(k) for k in ("supervisor_pid", "child_pid", "check_pid")) and (issue := runs.namespace_issue(st)):
+        raise ValueError(f"cannot cancel {run_dir.name}: {issue}; cancel from the originating host "
+                         "(for a legacy receipt, stop its original tmux session)")
+    (run_dir / ".env.json").unlink(missing_ok=True)  # a supervisor that never started leaves it
     (run_dir / "cancel").touch()
     sup = st.get("supervisor_pid")
     groups = [g for g in (st.get("child_pid"), st.get("check_pid")) if g and _killpg(g, signal.SIGTERM)]

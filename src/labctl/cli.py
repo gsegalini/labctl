@@ -156,7 +156,7 @@ def cmd_status(args) -> int:
     print(f"cwd:     {meta.get('cwd')}")
     print(f"tmux:    {meta.get('tmux')}")
     st = runs.read_json(d / "status.json", {})
-    pids = [f"{name} {st[key]} ({'alive' if runs.pid_alive(st[key]) else 'not running'})"
+    pids = [f"{name} {st[key]} ({runs.pid_status(st[key], st)})"
             for name, key in (("supervisor", "supervisor_pid"), ("command", "child_pid"), ("check", "check_pid"))
             if st.get(key)]
     if pids:
@@ -216,7 +216,11 @@ def _wait_inbox(args) -> int:
 
 
 def cmd_cancel(args) -> int:
-    print(supervisor.cancel(_run_dir(args.id)))
+    try:
+        print(supervisor.cancel(_run_dir(args.id)))
+    except ValueError as e:
+        print(f"labctl cancel: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

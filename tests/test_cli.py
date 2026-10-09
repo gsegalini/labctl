@@ -41,7 +41,7 @@ def _dead_pid():
 
 def test_status_reports_dead_supervisor(root, capsys):
     d = make_run(root, "true", name="ghost")
-    runs.write_json(d / "status.json", {"state": "running", "supervisor_pid": _dead_pid()})
+    runs.write_json(d / "status.json", {"state": "running", "pid_namespace": runs.pid_namespace(), "supervisor_pid": _dead_pid()})
     assert main(["status", "ghost"]) == 0
     assert "state:   unknown (supervisor not running)" in capsys.readouterr().out
     assert main(["status"]) == 0
@@ -129,3 +129,60 @@ def test_end_to_end_with_tmux(root, tmp_path, fake_agents):
         assert "event=report code=0 check=none" in entry["text"]
     finally:
         subprocess.run(["tmux", "kill-session", "-t", runs.tmux_session(name)], capture_output=True)
+
+
+@pytest.mark.parametrize("recorded_state", ["running", "queued"])
+@pytest.mark.parametrize("pid", [99999999, os.getpid()])
+def test_status_foreign_pid_namespace(root, capsys, monkeypatch, pid, recorded_state):
+    d = make_run(root, "true", name="foreign")
+    runs.write_json(d / "status.json", {
+        "state": recorded_state, "supervisor_pid": pid, "child_pid": pid,
+        "pid_namespace": "pid:[foreign]"})
+    assert main(["status", d.name]) == 0
+    out = capsys.readouterr().out
+    assert f"state:   {recorded_state} (processes unobservable: different PID namespace)" in out
+    assert "not running" not in out
+    assert "(alive)" not in out
+    assert "unobservable: different PID namespace" in out
+    def forbidden(*args):
+        pytest.fail("must not signal foreign namespace PID, even if it collides")
+    monkeypatch.setattr(os, "kill", forbidden)
+    monkeypatch.setattr(os, "killpg", forbidden)
+    with pytest.raises(ValueError, match="different PID namespace"):
+        supervisor.cancel(d)
+    assert main(["cancel", d.name]) == 1
+    captured = capsys.readouterr()
+    assert "labctl cancel: cannot cancel" in captured.err
+    assert "different PID namespace" in captured.err
+    assert "Traceback" not in captured.err
+    assert not (d / "cancel").exists()
+    assert runs.read_json(d / "status.json")["state"] == recorded_state
+
+
+def test_status_legacy_namespace_is_unverified(root, capsys):
+    d = make_run(root, "true", name="legacy")
+    runs.write_json(d / "status.json", {"state": "running", "supervisor_pid": _dead_pid()})
+    main(["status", d.name])
+    out = capsys.readouterr().out
+    assert "PID namespace not recorded" in out
+    assert "not running" not in out
+    with pytest.raises(ValueError, match="PID namespace not recorded"):
+        supervisor.cancel(d)
+
+
+def test_final_state_survives_foreign_namespace(root):
+    d = make_run(root, "true")
+    runs.write_json(d / "status.json", {"state": "succeeded", "supervisor_pid": os.getpid(),
+                                       "pid_namespace": "pid:[foreign]"})
+    assert runs.state(d) == "succeeded"
+    assert supervisor.cancel(d).endswith("already succeeded")
+
+
+def test_current_namespace_unavailable(root, monkeypatch):
+    d = make_run(root, "true")
+    runs.write_json(d / "status.json", {"state": "running", "supervisor_pid": os.getpid(),
+                                       "pid_namespace": runs.pid_namespace()})
+    monkeypatch.setattr(runs, "pid_namespace", lambda: None)
+    assert "current PID namespace unavailable" in runs.state(d)
+    with pytest.raises(ValueError, match="current PID namespace unavailable"):
+        supervisor.cancel(d)

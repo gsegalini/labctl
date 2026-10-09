@@ -235,7 +235,7 @@ def test_manager_lock_is_shared_across_runs(root, tmp_path):
 def test_escalate_wakes_wait_and_manager(root, tmp_path, fake_agents, capsys):
     fake_agents.add_session("mgr-1")
     d = run_with(root, tmp_path, experimenter="claude", manager="claude:mgr-1", name="esc")
-    runs.write_json(d / "status.json", {"state": "running", "supervisor_pid": os.getpid()})
+    runs.write_json(d / "status.json", {"state": "running", "pid_namespace": runs.pid_namespace(), "supervisor_pid": os.getpid()})
     out = {}
     t = threading.Thread(target=lambda: out.setdefault("rc", main(["wait", "esc", "--poll", "0.05"])))
     t.start()

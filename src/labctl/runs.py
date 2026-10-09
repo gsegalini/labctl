@@ -173,6 +173,33 @@ def read_events(run_dir: Path) -> list[dict]:
     return [e for e in read_jsonl(run_dir / "events.jsonl") if isinstance(e.get("seq"), int)]
 
 
+def pid_namespace() -> str | None:
+    """Namespace in which the numeric PIDs in a status receipt are meaningful."""
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
+def namespace_issue(status: dict) -> str | None:
+    recorded = status.get("pid_namespace")
+    current = pid_namespace()
+    if not recorded:
+        return "PID namespace not recorded"
+    if not current:
+        return "current PID namespace unavailable"
+    if recorded != current:
+        return "different PID namespace"
+    return None
+
+
+def pid_status(pid, status: dict) -> str:
+    issue = namespace_issue(status)
+    if issue:
+        return f"unobservable: {issue}"
+    return "alive" if pid_alive(pid) else "not running"
+
+
 def pid_alive(pid) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -194,8 +221,11 @@ def state(run_dir: Path) -> str:
     path = run_dir / "status.json"
     st = read_json(path, {})
     s = st.get("state", "unknown")
-    if s in ("queued", "running") and not pid_alive(st.get("supervisor_pid")):
-        return UNKNOWN
+    if s in ("queued", "running"):
+        if issue := namespace_issue(st):
+            return f"{s} (processes unobservable: {issue})"
+        if not pid_alive(st.get("supervisor_pid")):
+            return UNKNOWN
     if s == "starting" and time.time() - path.stat().st_mtime > START_GRACE:
         return NEVER_STARTED
     return str(s)
