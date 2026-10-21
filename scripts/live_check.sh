@@ -14,7 +14,7 @@
 #   g  --checkin with a brief, wrong early output: the inbox gets a fix_request (or escalation)
 #   h  success with a brief: the experimenter verifies the outputs; the inbox gets one report
 # Models come from a temp LABCTL_CONFIG: claude uses $CLAUDE_MODEL (sonnet) for
-# every tier, opencode $OPENCODE_MODEL (opencode-go/mimo-v2.6-flash); codex keeps
+# every tier, opencode $OPENCODE_MODEL (opencode-go/deepseek-v4.1-flash); codex keeps
 # labctl's defaults. Each scenario waits up to $LIVE_TIMEOUT seconds (240).
 # Run names carry a random tag, so several checks can run side by side.
 # SCENARIOS="b c" runs a subset.
@@ -26,7 +26,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 PY=$REPO/.venv/bin/python
 CAMPAIGN=$REPO/tests/sim/fake_campaign.py
 CLAUDE_MODEL=${CLAUDE_MODEL:-sonnet}
-OPENCODE_MODEL=${OPENCODE_MODEL:-opencode-go/mimo-v2.6-flash}
+OPENCODE_MODEL=${OPENCODE_MODEL:-opencode-go/deepseek-v4.1-flash}
 TIMEOUT=${LIVE_TIMEOUT:-240}
 unset CLAUDECODE  # the manager session below is a top-level session, not a nested one
 

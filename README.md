@@ -188,9 +188,9 @@ strong = "gpt-6.1-sol"
 cheap = "gpt-6-luna"
 
 [opencode]          # provider/model, as listed by `opencode models`
-frontier = "opencode-go/glm-5.3"
+frontier = "opencode-go/gemini-4-argon-contributor"
 strong = "opencode-go/deepseek-v4.1-flash"
-cheap = "opencode-go/mimo-v2.6-flash"
+cheap = "opencode-go/deepseek-v4.1-flash"
 ```
 
 The file is optional. Any key it sets overrides the packaged default in

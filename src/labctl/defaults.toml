@@ -15,6 +15,6 @@ cheap = "gpt-6-luna"
 
 [opencode]
 # Defaults to adjust: check `opencode models` for the ids your providers offer.
-frontier = "opencode-go/glm-5.3"
+frontier = "opencode-go/gemini-4-argon-contributor"
 strong = "opencode-go/deepseek-v4.1-flash"
-cheap = "opencode-go/mimo-v2.6-flash"
+cheap = "opencode-go/deepseek-v4.1-flash"
