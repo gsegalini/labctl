@@ -1,20 +1,25 @@
 # Model per role tier and harness. Override any key in ~/.config/labctl/config.toml
 # (same shape; set LABCTL_CONFIG to use another file). The user file wins per key.
+# TIER_effort sets that tier's reasoning effort (codex only).
 
 [claude]
 frontier = "fable"
 strong = "opus"
 cheap = "claude-haiku-5-5"
+experimenter = "claude-haiku-5-5"
 
 [codex]
 # Taken from ~/.codex on the development machine: main model, implementer role,
-# experimenter/operator roles.
+# operator role. gpt-6.1-terra defaults to low effort, too little for an experimenter.
 frontier = "gpt-6-astra"
 strong = "gpt-6.1-sol"
 cheap = "gpt-6-luna"
+experimenter = "gpt-6.1-terra"
+experimenter_effort = "high"
 
 [opencode]
 # Defaults to adjust: check `opencode models` for the ids your providers offer.
 frontier = "opencode-go/gemini-4-argon-contributor"
 strong = "opencode-go/deepseek-v4.1-flash"
 cheap = "opencode-go/deepseek-v4.1-flash"
+experimenter = "opencode-go/deepseek-v4.1-flash"

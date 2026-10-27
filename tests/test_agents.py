@@ -8,7 +8,7 @@ from conftest import inbox, make_run, supervise, wait_until
 
 from labctl import agents, harness, runs, wake
 from labctl.cli import main
-from labctl.install import load_role, model_for
+from labctl.install import effort_for, load_role, model_for
 
 
 def run_with(root, tmp_path, script="true", experimenter=None, manager=None, brief="BRIEF: keep it alive\n", **kw):
@@ -126,17 +126,21 @@ def test_lazy_start_then_resume(root, tmp_path, fake_agents, monkeypatch, h, exp
     agents.deliver_turn(d, e2["seq"])
     agents.deliver_turn(d, e2["seq"])  # a duplicate _deliver finds nothing pending
     first, second = fake_agents()
-    model, role = model_for(h, load_role("experimenter").tier), load_role("experimenter").prompt
-    assert first["argv"] == harness.start(h, model=model, role=role, message="", session_id=sid, in_git=False)[0]
+    tier, role = load_role("experimenter").tier, load_role("experimenter").prompt
+    model, effort = model_for(h, tier), effort_for(h, tier)
+    assert first["argv"] == harness.start(h, model=model, role=role, message="", session_id=sid, effort=effort,
+                                          in_git=False)[0]
     if h == "codex":
         for call in (first, second):
+            assert call["argv"][call["argv"].index("-m") + 1] == "gpt-6.1-terra"
+            assert 'model_reasoning_effort="high"' in call["argv"]  # terra's default is low
             assert 'approval_policy="on-request"' in call["argv"]
             assert 'approvals_reviewer="auto_review"' in call["argv"]
     brief_at = first["prompt"].index(f"Brief for labctl run {d.name}:")
     assert (role in first["prompt"]) == (h == "opencode")
     assert "BRIEF: keep it alive" in first["prompt"] and "matched: boom!" in first["prompt"]
     assert brief_at < first["prompt"].index("[labctl wake] source=supervisor run=")
-    assert second["argv"] == harness.resume(h, sid, "", model=model, role=role, in_git=False)[0]
+    assert second["argv"] == harness.resume(h, sid, "", model=model, role=role, effort=effort, in_git=False)[0]
     assert second["prompt"].startswith("[labctl wake] source=supervisor") and "event=exit code=1" in second["prompt"]
     assert first["cwd"] == str(tmp_path) and first["runs_dir"] == str(root)
     assert agents.load(d)["experimenter"]["session_id"] == sid
@@ -311,7 +315,8 @@ def test_attach(root, tmp_path, fake_agents):
     assert main(["attach", "att"]) == 0
     manager, experimenter = fake_agents()
     assert manager["argv"] == ["opencode", "-s", "ses_m"]
-    assert experimenter["argv"] == ["codex", "resume", "-m", model_for("codex", "cheap"), "thread-9"]
+    assert experimenter["argv"] == ["codex", "resume", "-m", "gpt-6.1-terra", "-c", 'model_reasoning_effort="high"',
+                                    "thread-9"]
     assert experimenter["cwd"] == str(tmp_path)
     plain = run_with(root, tmp_path, name="plain")
     with pytest.raises(SystemExit, match="has no experimenter"):

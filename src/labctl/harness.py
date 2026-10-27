@@ -23,6 +23,10 @@ def _git_flag(in_git: bool) -> list[str]:
     return [] if in_git else ["--skip-git-repo-check"]
 
 
+def _effort(effort: str | None) -> list[str]:
+    return ["-c", f"model_reasoning_effort={toml_str(effort)}"] if effort else []
+
+
 def _check_arg(name: str, value: str) -> str:
     if len(value.encode()) > MAX_ARG:
         raise ValueError(f"{name} is {len(value.encode())} bytes; the limit for a command-line argument is {MAX_ARG}")
@@ -30,14 +34,14 @@ def _check_arg(name: str, value: str) -> str:
 
 
 def start(harness: str, *, model: str, role: str, message: str, session_id: str | None = None,
-          in_git: bool = True) -> tuple[list[str], str]:
-    """First turn of a new session. claude needs the session id labctl chose."""
+          effort: str | None = None, in_git: bool = True) -> tuple[list[str], str]:
+    """First turn of a new session. claude needs the session id labctl chose; only codex uses `effort`."""
     if harness == "claude":
         return (["claude", "-p", "--session-id", session_id, "--model", model, "--output-format", "json",
                  "--append-system-prompt", _check_arg("role prompt", role), *CLAUDE_TOOLS], message)
     if harness == "codex":
         instructions = _check_arg("role prompt", f"developer_instructions={toml_str(role)}")
-        return (["codex", "exec", "--json", "-m", model, "-c", instructions, "-s", "workspace-write",
+        return (["codex", "exec", "--json", "-m", model, *_effort(effort), "-c", instructions, "-s", "workspace-write",
                  *CODEX_APPROVALS, *CODEX_NET, *_git_flag(in_git), "-"], message)
     if harness == "opencode":  # no system-prompt flag: the role opens the first message
         return ["opencode", "run", "--format", "json", "-m", model], f"{role}\n\n{message}"
@@ -45,7 +49,7 @@ def start(harness: str, *, model: str, role: str, message: str, session_id: str 
 
 
 def resume(harness: str, session_id: str, message: str, *, model: str | None = None, role: str | None = None,
-           in_git: bool = True) -> tuple[list[str], str]:
+           effort: str | None = None, in_git: bool = True) -> tuple[list[str], str]:
     """A later turn. `role`: the experimenter's role prompt; None for a manager, whose session
     runs under the project's own permission settings."""
     if harness == "claude":
@@ -55,7 +59,8 @@ def resume(harness: str, session_id: str, message: str, *, model: str | None = N
         return (["claude", "-p", "--resume", session_id, "--output-format", "json",
                  "--append-system-prompt", _check_arg("role prompt", role), *CLAUDE_TOOLS], message)
     if harness == "codex":  # codex does not keep the model across resumes
-        return (["codex", "exec", "resume", "--json", "-m", model, "-c", 'sandbox_mode="workspace-write"',
+        return (["codex", "exec", "resume", "--json", "-m", model, *_effort(effort),
+                 "-c", 'sandbox_mode="workspace-write"',
                  *(CODEX_APPROVALS if role is not None else []), *CODEX_NET, *_git_flag(in_git), session_id, "-"], message)
     if harness == "opencode":
         return ["opencode", "run", "--format", "json", "-s", session_id], message
@@ -79,11 +84,11 @@ def session_not_found(output: str) -> bool:
     return "no conversation found" in low or "not found" in low or "no such session" in low
 
 
-def attach(harness: str, session_id: str, model: str | None = None) -> list[str]:
+def attach(harness: str, session_id: str, model: str | None = None, effort: str | None = None) -> list[str]:
     if harness == "claude":
         return ["claude", "--resume", session_id]
     if harness == "codex":
-        return ["codex", "resume", "-m", model, session_id]
+        return ["codex", "resume", "-m", model, *_effort(effort), session_id]
     if harness == "opencode":
         return ["opencode", "-s", session_id]
     raise ValueError(f"unknown harness {harness!r}")

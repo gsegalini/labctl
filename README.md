@@ -133,7 +133,7 @@ runs/
     log            merged stdout/stderr (plus --check output)
     exit-code      exit code; 128+N if killed by signal N
     brief.md       copy of --brief
-    sessions.json  experimenter / manager: harness, session id, model, started, delivered
+    sessions.json  experimenter / manager: harness, session id, model, effort, started, delivered
     wake.log       each agent delivery: command (logged before it runs), exit code, token usage, output tail
     supervisor.log supervisor errors, if any
 ```
@@ -174,23 +174,28 @@ Each role has a tier, and the config maps tiers to model ids per harness.
 | --- | --- |
 | `frontier` | the manager (only used by labctl to resume a Codex manager headlessly, since Codex does not remember its model; a wake queued into a thread open in the app runs on that thread's own model) |
 | `strong` | implementer |
-| `cheap` | explorer and experimenter |
+| `cheap` | explorer |
+| `experimenter` | experimenter |
 
 ```toml
 [claude]            # aliases (fable, opus, sonnet, haiku) or full model ids
 frontier = "fable"
 strong = "opus"
 cheap = "claude-haiku-5-5"
+experimenter = "claude-haiku-5-5"
 
 [codex]             # bare model ids
 frontier = "gpt-6-astra"
 strong = "gpt-6.1-sol"
 cheap = "gpt-6-luna"
+experimenter = "gpt-6.1-terra"
+experimenter_effort = "high"   # TIER_effort: reasoning effort, codex only
 
 [opencode]          # provider/model, as listed by `opencode models`
 frontier = "opencode-go/gemini-4-argon-contributor"
 strong = "opencode-go/deepseek-v4.1-flash"
 cheap = "opencode-go/deepseek-v4.1-flash"
+experimenter = "opencode-go/deepseek-v4.1-flash"
 ```
 
 The file is optional. Any key it sets overrides the packaged default in
@@ -198,9 +203,12 @@ The file is optional. Any key it sets overrides the packaged default in
 opencode defaults use the `opencode-go/` provider for every tier; override
 `[opencode]` if your installation uses another provider.
 
-The model is fixed where it is used: `install` writes it into the role files,
-and `labctl run --brief` records the experimenter's model in the run's
-`sessions.json` when the run is created.
+`TIER_effort` sets a tier's reasoning effort for codex (`model_reasoning_effort`);
+without it the model's default applies. gpt-6.1-terra defaults to `low`.
+
+The model and effort are fixed where they are used: `install` writes them into
+the role files, and `labctl run --brief` records the experimenter's model and
+effort in the run's `sessions.json` when the run is created.
 
 ### Environment variables
 

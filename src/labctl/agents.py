@@ -1,7 +1,7 @@
 """Agent sessions of a run: records, per-session locks, one wake turn, attach.
 
 <run>/sessions.json:
-  {"experimenter": {"harness", "session_id", "model", "started",    # only with --brief
+  {"experimenter": {"harness", "session_id", "model", "effort", "started",  # only with --brief
                     "queued_exit"},  # seq of an exit wake queued into an open codex conversation
    "manager": {"harness", "session_id", "model"}}                   # only with --manager
 """
@@ -28,7 +28,8 @@ def new_sessions(experimenter: str | None, manager: str | None) -> dict:
     if experimenter:
         tier = install.load_role("experimenter").tier
         sessions["experimenter"] = {"harness": experimenter, "session_id": None,
-                                    "model": install.model_for(experimenter, tier), "started": False}
+                                    "model": install.model_for(experimenter, tier),
+                                    "effort": install.effort_for(experimenter, tier), "started": False}
     if manager:
         h, _, sid = manager.partition(":")
         if h not in install.HARNESSES or not sid:
@@ -203,7 +204,8 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
     prompt = install.load_role(role).prompt if role == "experimenter" else None  # resumes: see harness.resume
 
     def resume():
-        return harness.resume(h, sid, message, model=rec.get("model"), role=prompt, in_git=in_git)
+        return harness.resume(h, sid, message, model=rec.get("model"), role=prompt, effort=rec.get("effort"),
+                              in_git=in_git)
 
     exits = [e for e in pending if e["event"] == "exit"]
     r, queued = None, False
@@ -224,8 +226,8 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
                     f'  labctl escalate {rid} -m "<what happened, evidence, decision needed>"\n'
                     f'  labctl escalate {rid} --fix -m "<observed, evidence, cause, what the fix must achieve>"\n'
                     f"\n{message}")
-            r = _run(run_dir, role, seqs, harness.start(h, model=rec["model"], role=prompt,
-                                                        message=text, session_id=sid, in_git=in_git), cwd)
+            r = _run(run_dir, role, seqs, harness.start(h, model=rec["model"], role=prompt, message=text,
+                                                        session_id=sid, effort=rec.get("effort"), in_git=in_git), cwd)
         elif r is None:
             r = _run(run_dir, role, seqs, resume(), cwd)
             if h == "codex" and r.returncode and "already has an active writer" in r.stderr:
@@ -295,7 +297,7 @@ def attach(run_dir: Path, role: str) -> int:
                          + (" (it was started without --brief)" if role == "experimenter" else ""))
     if not rec.get("session_id"):  # an id without `started`: a failed first turn, worth a look
         raise SystemExit(f"labctl attach: no session yet: no event has woken the {role} of {run_dir.name}")
-    argv = harness.attach(rec["harness"], rec["session_id"], rec.get("model"))
+    argv = harness.attach(rec["harness"], rec["session_id"], rec.get("model"), rec.get("effort"))
     path = lock_path(run_dir, role, rec)
     if busy(path):
         print("labctl attach: waiting for the agent's current turn to finish...", flush=True)

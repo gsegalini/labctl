@@ -44,8 +44,8 @@ def config_path() -> Path:
     return Path(os.environ.get("LABCTL_CONFIG", "~/.config/labctl/config.toml")).expanduser()
 
 
-def model_for(harness: str, tier: str) -> str:
-    """Model for a role tier; the user config overrides defaults.toml per key."""
+def tier_config(harness: str) -> dict:
+    """The harness's table: defaults.toml, overridden per key by the user config."""
     models = tomllib.loads((HERE / "defaults.toml").read_text())
     if config_path().exists():
         user = tomllib.loads(config_path().read_text())
@@ -54,9 +54,20 @@ def model_for(harness: str, tier: str) -> str:
                 models.setdefault(h, {}).update(table)
     if harness not in models:
         raise ValueError(f"unknown harness {harness!r}; expected one of {HARNESSES}")
-    if tier not in models[harness]:
+    return models[harness]
+
+
+def model_for(harness: str, tier: str) -> str:
+    """Model for a role tier."""
+    table = tier_config(harness)
+    if tier not in table:
         raise ValueError(f"no model for tier {tier!r} in harness {harness!r}")
-    return models[harness][tier]
+    return table[tier]
+
+
+def effort_for(harness: str, tier: str) -> str | None:
+    """Reasoning effort for a role tier (`TIER_effort`), or None for the model's default."""
+    return tier_config(harness).get(f"{tier}_effort")
 
 
 def toml_str(text: str) -> str:
@@ -74,6 +85,8 @@ def render_role(role: Role, harness: str) -> str:
                 f"model: {model}\n{extra}---\n{role.prompt}")
     if harness == "codex":
         extra = 'sandbox_mode = "read-only"\n' if role.read_only else ""
+        if effort := effort_for(harness, role.tier):
+            extra += f"model_reasoning_effort = {toml_str(effort)}\n"
         return (f"{MARKER}\nname = {toml_str(role.name)}\ndescription = {toml_str(role.description)}\n"
                 f"model = {toml_str(model)}\n{extra}"
                 f"developer_instructions = {toml_str(role.prompt)}\n")

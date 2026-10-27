@@ -2,8 +2,8 @@ import tomllib
 
 import pytest
 
-from labctl.install import (MARKER, ROLES, install, load_role, model_for,
-                            split_frontmatter)
+from labctl.install import (MARKER, ROLES, effort_for, install, load_role,
+                            model_for, split_frontmatter)
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def test_roles_parse():
     for name in ROLES:
         role = load_role(name)
         assert role.name == name
-        assert role.tier in {"frontier", "strong", "cheap"}
+        assert role.tier in {"frontier", "strong", "cheap", "experimenter"}
         assert role.description and role.prompt.strip()
     assert [n for n in ROLES if load_role(n).read_only] == ["explorer"]
 
@@ -49,6 +49,8 @@ def test_install(harness, tmp_path):
         role = load_role(name)
         meta, prompt = parse_agent(harness, path)
         assert meta["model"] == model_for(harness, role.tier)
+        if harness == "codex":
+            assert meta.get("model_reasoning_effort") == effort_for(harness, role.tier)
         assert prompt.strip() == role.prompt.strip()
         text = path.read_text()
         restricted = {"claude": "disallowedTools", "codex": "sandbox_mode",
@@ -88,6 +90,17 @@ def test_user_config_overrides_per_key(tmp_path, monkeypatch):
     install("claude", tmp_path / "proj")
     meta, _ = split_frontmatter((tmp_path / "proj/.claude/agents/explorer.md").read_text())
     assert meta["model"] == "my-small-model"
+
+
+def test_experimenter_tier_and_effort(tmp_path, monkeypatch):
+    assert (model_for("codex", "experimenter"), effort_for("codex", "experimenter")) == ("gpt-6.1-terra", "high")
+    assert effort_for("codex", "cheap") is None and effort_for("claude", "experimenter") is None
+    meta, _ = parse_agent("codex", install("codex", tmp_path / "a")[1])
+    assert (meta["name"], meta["model_reasoning_effort"]) == ("experimenter", "high")
+    config = tmp_path / "config.toml"
+    config.write_text('[codex]\nexperimenter_effort = "xhigh"\n')
+    monkeypatch.setenv("LABCTL_CONFIG", str(config))
+    assert (model_for("codex", "experimenter"), effort_for("codex", "experimenter")) == ("gpt-6.1-terra", "xhigh")
 
 
 def test_codex_prompt_with_awkward_text_round_trips(tmp_path):
