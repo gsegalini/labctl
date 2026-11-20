@@ -185,9 +185,12 @@ cheap = "claude-haiku-5-5"
 experimenter = "claude-haiku-5-5"
 
 [codex]             # bare model ids
-frontier = "gpt-6-astra"
-strong = "gpt-6.1-sol"
-cheap = "gpt-6-luna"
+frontier = "gpt-6.2-astra"
+frontier_effort = "high"
+strong = "gpt-6.2-sol"
+strong_effort = "high"
+cheap = "gpt-6.1-terra"
+cheap_effort = "high"
 experimenter = "gpt-6.1-terra"
 experimenter_effort = "high"   # TIER_effort: reasoning effort, codex only
 

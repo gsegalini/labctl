@@ -92,9 +92,17 @@ def test_user_config_overrides_per_key(tmp_path, monkeypatch):
     assert meta["model"] == "my-small-model"
 
 
+def test_codex_model_defaults():
+    assert model_for("codex", "frontier") == "gpt-6.2-astra"
+    assert model_for("codex", "strong") == "gpt-6.2-sol"
+    assert model_for("codex", "cheap") == "gpt-6.1-terra"
+    for tier in ("frontier", "strong", "cheap"):
+        assert effort_for("codex", tier) == "high"
+
+
 def test_experimenter_tier_and_effort(tmp_path, monkeypatch):
     assert (model_for("codex", "experimenter"), effort_for("codex", "experimenter")) == ("gpt-6.1-terra", "high")
-    assert effort_for("codex", "cheap") is None and effort_for("claude", "experimenter") is None
+    assert effort_for("claude", "experimenter") is None
     meta, _ = parse_agent("codex", install("codex", tmp_path / "a")[1])
     assert (meta["name"], meta["model_reasoning_effort"]) == ("experimenter", "high")
     config = tmp_path / "config.toml"

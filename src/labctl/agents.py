@@ -34,9 +34,11 @@ def new_sessions(experimenter: str | None, manager: str | None) -> dict:
         h, _, sid = manager.partition(":")
         if h not in install.HARNESSES or not sid:
             raise ValueError(f"--manager must be HARNESS:SESSION_ID with HARNESS in {install.HARNESSES}")
-        # codex forgets the model on resume, so pin the manager's
+        # Pin the model and effort for headless Codex resumes.
         sessions["manager"] = {"harness": h, "session_id": sid,
                                "model": install.model_for(h, "frontier") if h == "codex" else None}
+        if h == "codex":
+            sessions["manager"]["effort"] = install.effort_for(h, "frontier")
     return sessions
 
 

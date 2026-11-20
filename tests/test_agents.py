@@ -179,7 +179,7 @@ def test_manager_delivery_uses_resume(root, tmp_path, fake_agents):
     e = ev(d, "exit", code=0, check=None, ok=True)
     agents.deliver_turn(d, e["seq"])
     [call] = fake_agents()
-    assert call["argv"] == harness.resume("codex", "mgr-7", "", model=model_for("codex", "frontier"), in_git=False)[0]
+    assert call["argv"] == harness.resume("codex", "mgr-7", "", model=model_for("codex", "frontier"), effort="high", in_git=False)[0]
     assert call["prompt"].startswith("[labctl wake] source=supervisor")
 
 
