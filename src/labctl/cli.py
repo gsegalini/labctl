@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from labctl import agents, runs, supervisor, wake
+from labctl import agents, runs, slot_queue, supervisor, wake
 from labctl.install import HARNESSES
 
 SUPERVISOR_START_TIMEOUT = 10.0  # seconds
@@ -39,6 +39,8 @@ def cmd_run(args) -> int:
         sys.exit("labctl run: --stall MINUTES must be a number > 0")
     if args.slot is not None and not runs.NAME_RE.fullmatch(args.slot):
         sys.exit(f"labctl run: invalid --slot {args.slot!r}: use letters, digits, '_', '-', '.'")
+    if args.estimate is not None and (not args.slot or not math.isfinite(args.estimate) or args.estimate <= 0):
+        sys.exit("labctl run: --estimate MINUTES requires --slot and a finite positive estimate")
     harness = args.harness or os.environ.get("LABCTL_HARNESS")
     if args.brief and harness not in HARNESSES:
         sys.exit(f"labctl run: --brief starts an experimenter, so it needs --harness or $LABCTL_HARNESS "
@@ -49,7 +51,8 @@ def cmd_run(args) -> int:
         sessions = agents.new_sessions(harness if args.brief else None, args.manager)
         run_dir = runs.create_run(runs.runs_dir(), command, cwd=Path.cwd(), name=args.name,
                                   slot=args.slot, wake_on=args.wake_on, stall=args.stall, checkin=args.checkin,
-                                  check=args.check, brief=args.brief, env=os.environ, sessions=sessions)
+                                  check=args.check, brief=args.brief, env=os.environ, sessions=sessions,
+                                  estimate_minutes=args.estimate)
     except FileExistsError:
         sys.exit(f"labctl run: run {args.name!r} already exists")
     except (ValueError, OSError) as e:
@@ -76,6 +79,26 @@ def cmd_run(args) -> int:
         runs.write_json(run_dir / "status.json", {"state": "failed", "error": error})
         sys.exit(f"labctl run: {error}")
     print(run_dir.name)
+    return 0
+
+
+def cmd_queue(args) -> int:
+    if not runs.NAME_RE.fullmatch(args.slot):
+        sys.exit(f"labctl queue: invalid slot {args.slot!r}")
+    root = runs.runs_dir()
+    with slot_queue.locked(root, args.slot) as order_file:
+        ready, legacy = slot_queue.waiting(root, args.slot, order_file, inspect=True)
+        if args.first:
+            if len(set(args.first)) != len(args.first) or any(name not in ready for name in args.first):
+                sys.exit("labctl queue: --first requires distinct, reorderable waiting IDs in this slot")
+            previous = runs.read_json(order_file, {}).get("first", [])
+            preferred = args.first + [name for name in previous if name in ready and name not in args.first]
+            runs.write_json(order_file, {"first": preferred})
+            ready = args.first + [name for name in ready if name not in args.first]
+    for name in ready:
+        print(name)
+    for name in legacy:
+        print(f"{name} (legacy waiter, order unknown)")
     return 0
 
 
@@ -272,11 +295,12 @@ def cmd_install(args) -> int:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="labctl", description="Run experiments; wake agents on events.")
     sub = p.add_subparsers(dest="cmd", required=True,
-                           metavar="{run,status,tail,wait,cancel,escalate,report,sessions,attach,install}")
+                           metavar="{run,queue,status,tail,wait,cancel,escalate,report,sessions,attach,install}")
 
     r = sub.add_parser("run", help="start a command under the supervisor in tmux")
     r.add_argument("--name", help="run id (default: timestamp + random hex)")
     r.add_argument("--slot", help="run exclusively in this slot (queue behind other runs)")
+    r.add_argument("--estimate", type=float, metavar="MINUTES", help="estimated slot occupancy for queue ordering")
     r.add_argument("--wake-on", action="append", default=[], metavar="REGEX",
                    help="record a match event for log lines matching REGEX (repeatable)")
     r.add_argument("--stall", type=float, metavar="MINUTES", help="record a stall event after this long without output")
@@ -289,6 +313,11 @@ def main(argv=None) -> int:
                    help="resume this session headlessly with manager wakes (default: inbox only)")
     r.add_argument("command", nargs=argparse.REMAINDER, help="-- <command...>")
     r.set_defaults(func=cmd_run)
+
+    q = sub.add_parser("queue", help="show or reorder the waiting runs in a slot")
+    q.add_argument("slot")
+    q.add_argument("--first", nargs="+", metavar="ID", help="move these waiting runs to the front in this order")
+    q.set_defaults(func=cmd_queue)
 
     s = sub.add_parser("status", help="list runs, or show one run")
     s.add_argument("id", nargs="?")

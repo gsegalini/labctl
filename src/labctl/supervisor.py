@@ -13,13 +13,16 @@ import sys
 import time
 from pathlib import Path
 
-from labctl import runs
+from labctl import runs, slot_queue
 from labctl.wake import emit
 
 MAX_PENDING = 65536  # bytes of an unterminated line kept in memory
 DRAIN_SECONDS = 1.0  # output still read after the main process exits
 EXIT_POLL_SECONDS = 0.5  # how often a silent run is checked for having exited
 ORPHAN_POLL_SECONDS = 1.0  # how often a slot checks whether a dead supervisor's command has exited
+
+
+QUEUE_POLL_SECONDS = 0.2
 
 
 class Cancelled(Exception):
@@ -72,10 +75,7 @@ def supervise(run_dir: Path) -> int:
             slots.mkdir(exist_ok=True)
             lock = open(slots / f"{meta['slot']}.lock", "a+")  # holds the last holder's run dir
             waiting = True
-            fcntl.flock(lock, fcntl.LOCK_EX)  # held until we exit
-            lock.seek(0)
-            prev = lock.read().strip()
-            _wait_for_orphan(Path(prev) if prev else None, meta["slot"], log)
+            _acquire_slot(lock, run_dir, meta, status, log)
             waiting = False
             lock.truncate(0)
             lock.write(f"{run_dir}\n")
@@ -131,6 +131,41 @@ def supervise(run_dir: Path) -> int:
     if lock:
         lock.close()
     return 0
+
+
+def _acquire_slot(lock, run_dir, meta, status, log):
+    slot = meta["slot"]
+    if "submitted_ns" not in meta:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _check_previous_holder(lock, slot, log)
+        return
+    while not (run_dir / "cancel").exists():
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            time.sleep(QUEUE_POLL_SECONDS)
+            continue
+        # The execution lock may be free while the previous holder’s child is still alive.
+        with slot_queue.locked(run_dir.parent, slot) as order_file:
+            ready, _ = slot_queue.waiting(run_dir.parent, slot, order_file)
+        if ready[:1] == [run_dir.name]:
+            _check_previous_holder(lock, slot, log)
+            # A move can arrive during the orphan wait. Commit admission under the queue lock.
+            with slot_queue.locked(run_dir.parent, slot) as order_file:
+                ready, _ = slot_queue.waiting(run_dir.parent, slot, order_file)
+                if ready[:1] == [run_dir.name]:
+                    status["admitted"] = True
+                    runs.write_json(run_dir / "status.json", status)
+                    return
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        time.sleep(QUEUE_POLL_SECONDS)
+    raise Cancelled
+
+
+def _check_previous_holder(lock, slot, log):
+    lock.seek(0)
+    previous = lock.read().strip()
+    _wait_for_orphan(Path(previous) if previous else None, slot, log)
 
 
 def _orphaned_groups(prev: Path) -> list[int]:

@@ -186,3 +186,94 @@ def test_current_namespace_unavailable(root, monkeypatch):
     assert "current PID namespace unavailable" in runs.state(d)
     with pytest.raises(ValueError, match="current PID namespace unavailable"):
         supervisor.cancel(d)
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux not installed")
+def test_reorder_live_slot_in_tmux(root, tmp_path, capsys):
+    prefix = uuid.uuid4().hex[:8]
+    gate = tmp_path / "release"
+    starts = tmp_path / "starts"
+    names = []
+
+    def launch(label, command, *options):
+        name = f"{prefix}-{label}"
+        names.append(name)
+        assert main(["run", "--name", name, *options, "--", *command]) == 0
+        capsys.readouterr()
+        return name
+
+    def queue(*args):
+        assert main(["queue", "gpu", *args]) == 0
+        return capsys.readouterr().out.splitlines()
+
+    def receipt(name):
+        wait_until(lambda: runs.state(root / name) in runs.FINAL)
+        assert main(["wait", name, "--poll", "0.05"]) == 0
+        assert "event=exit code=0 check=passed" in capsys.readouterr().out
+
+    try:
+        holder = launch("holder", ["sh", "-c", 'until test -e "$1"; do sleep .05; done', "sh", str(gate)],
+                        "--slot", "gpu", "--check", "true")
+        wait_until(lambda: runs.state(root / holder) == "running")
+        long = launch("long", ["sh", "-c", 'echo long >> "$1"', "sh", str(starts)],
+                      "--slot", "gpu", "--estimate", "20", "--check", "true")
+        short = launch("short", ["sh", "-c", 'echo short >> "$1"', "sh", str(starts)],
+                       "--slot", "gpu", "--estimate", "1", "--check", "true")
+        waiter = launch("downstream", [*runs.LABCTL, "wait", long, "--after", "0"],
+                        "--check", 'grep -q "event=exit code=0 check=passed" "$LABCTL_RUN_DIR/log"')
+        other = launch("other", ["true"], "--slot", "other", "--check", "true")
+        cpu = launch("cpu", ["true"], "--check", "true")
+        receipt(cpu)
+        receipt(other)
+        assert queue() == [short, long]
+        assert queue("--first", long) == [long, short]
+        assert queue() == [long, short]
+        gate.touch()
+        for name in (holder, long, short, waiter):
+            receipt(name)
+        assert starts.read_text().splitlines() == ["long", "short"]
+    finally:
+        gate.touch()
+        for name in names:
+            subprocess.run(["tmux", "kill-session", "-t", f"={runs.tmux_session(name)}"], capture_output=True)
+
+
+def test_queue_concurrent_moves_and_dead_head(root, capsys):
+    holder = make_run(root, "sleep 30", slot="gpu", name="holder")
+    jobs = [make_run(root, "true", slot="gpu", name=name) for name in ("a", "b", "c", "old")]
+    legacy_meta = runs.read_json(jobs[-1] / "run.json")
+    del legacy_meta["submitted_ns"]
+    runs.write_json(jobs[-1] / "run.json", legacy_meta)
+    processes = []
+    try:
+        processes.append(start(holder))
+        wait_until(lambda: runs.state(holder) == "running")
+        processes.extend(start(job) for job in jobs)
+        for job in jobs:
+            wait_until(lambda: runs.state(job) == "queued")
+        assert main(["queue", "gpu"]) == 0
+        assert capsys.readouterr().out.splitlines() == ["a", "b", "c", "old (legacy waiter, order unknown)"]
+        with pytest.raises(SystemExit, match="reorderable"):
+            main(["queue", "gpu", "--first", "old"])
+        moves = [subprocess.Popen([*runs.LABCTL, "queue", "gpu", "--first", name],
+                                  stdout=subprocess.DEVNULL) for name in ("b", "c")]
+        assert [move.wait(timeout=5) for move in moves] == [0, 0]
+        assert main(["queue", "gpu"]) == 0
+        order = capsys.readouterr().out.splitlines()
+        assert set(order[:2]) == {"b", "c"} and order[2] == "a"
+        head = processes[1 + ("a", "b", "c").index(order[0])]
+        head.kill()
+        head.wait(timeout=5)
+        assert main(["queue", "gpu"]) == 0
+        assert capsys.readouterr().out.splitlines() == order[1:]
+        supervisor.cancel(root / order[1], grace=1)
+        assert main(["queue", "gpu"]) == 0
+        assert capsys.readouterr().out.splitlines() == order[2:]
+        supervisor.cancel(holder, grace=1)
+        assert processes[1].wait(timeout=10) == 0
+        assert runs.state(jobs[0]) == "succeeded"
+    finally:
+        for directory, process in zip([holder, *jobs], processes):
+            if process.poll() is None:
+                supervisor.cancel(directory, grace=1)
+                process.wait(timeout=5)

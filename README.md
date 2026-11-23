@@ -12,7 +12,7 @@ agents' `PATH` (e.g. `uv tool install .`).
 ## Commands
 
 ```
-labctl run [--name N] [--slot NAME] [--wake-on REGEX]... [--stall MINUTES]
+labctl run [--name N] [--slot NAME] [--estimate MINUTES] [--wake-on REGEX]... [--stall MINUTES]
            [--checkin MINUTES]... [--check CMD] [--brief FILE] [--harness claude|codex|opencode]
            [--manager HARNESS:SESSION_ID] -- <command...>
 labctl status [ID]          # all runs + recent inbox, or one run in detail
@@ -22,6 +22,7 @@ labctl wait [--after N]        # the next manager wake of any run (inbox entry)
 labctl cancel ID
 labctl escalate ID [--fix] -m TEXT   # experimenter -> manager (--fix: a fix request)
 labctl report ID -m TEXT    # experimenter -> manager: the verdict on a finished run
+labctl queue SLOT [--first ID ...]
 labctl sessions [ID]        # agent sessions: role, harness, id, started, busy
 labctl attach ID [ROLE]     # open the experimenter (default) or manager conversation
 labctl install HARNESS [--project DIR]   # write role prompts and the manager skill
@@ -31,6 +32,10 @@ labctl install HARNESS [--project DIR]   # write role prompts and the manager sk
   `flock` on `<runs>/.slots/NAME.lock`); waiting runs are `queued`. If a
   supervisor dies while its command runs on, the next run stays `queued` (and
   says why in its log) until that command is gone or cancelled.
+- `--estimate MINUTES` requires a slot and a positive finite estimate of how
+  long the run will hold it. Ready waiters with estimates go shortest first.
+  Waiters without estimates follow them in submission order. Equal estimates
+  use submission order too.
 - `--wake-on REGEX`: every log line matching it (`re.search`) records a
   `match` event. `\r` progress updates are matched too; only the last update
   of a line is logged. A line without a newline is kept to its last 64 KiB.
@@ -76,6 +81,29 @@ recorded as `cancelled` with the signal. If the pane is stopped (Ctrl-S), the
 echo drops lines; the run and its `log` are unaffected. `labctl run` fails
 before creating anything if the session name is taken, and waits until the
 supervisor has started (its crash output goes to `supervisor.log`).
+
+### Slot queues
+
+`labctl queue gpu` prints the current waiting IDs in admission order.
+`labctl queue gpu --first ID [ID ...]` moves those waiting IDs to the front
+in the given order, retaining the relative order of the other waiters.
+Explicit moves take precedence over estimates. Once admitted, a run holds
+its slot through its command and check. Moving a waiter preserves its run ID
+and downstream waits.
+
+Use one slot per shared GPU when jobs need exclusive access. Slots are
+independent, and a run without a slot starts immediately. A ready waiter is
+a live supervisor waiting for its slot in the admitting supervisor’s PID
+namespace. From another namespace, queue inspection and reordering use the
+recorded waiting state because process liveness cannot be checked there.
+A dependency or capacity gate
+inside the command runs after admission and occupies the slot.
+
+Supervisors started by older versions still wait on the original lock.
+The queue lists these as legacy waiters with unknown order. They can take
+the slot independently of the displayed native order. Let them drain to
+keep their existing IDs, or cancel and resubmit them with new IDs and update
+downstream references before relying on the new order.
 
 ## Wakes and routing
 

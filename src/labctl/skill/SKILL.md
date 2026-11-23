@@ -1,6 +1,6 @@
 ---
 name: labctl-manager
-description: Run, launch, and monitor experiments and long jobs with labctl. Use when starting an experiment, checking or waiting on a run, handling a `[labctl wake]` event or escalation, or delegating implementation and codebase questions to subagents.
+description: Launch, reorder, and monitor experiments and long jobs with labctl. Use when starting an experiment, checking or waiting on a run, handling a `[labctl wake]` event or escalation, or delegating implementation and codebase questions to subagents.
 ---
 # Managing experiments with labctl
 
@@ -31,6 +31,12 @@ labctl run --name lr3e-4 --slot gpu \
 - `--harness claude|codex|opencode` picks the experimenter's harness (default `$LABCTL_HARNESS`; required with `--brief`).
 - `--manager HARNESS:SESSION_ID` resumes your session headlessly with each manager wake; use it when nobody is watching.
 - The command runs in tmux session `labctl-<id>`; its files are in `runs/<id>/`. Quote regexes and `=`-leading words for zsh.
+
+## Reordering a slot
+
+1. Run `labctl queue SLOT` from the same project or with the same `LABCTL_RUNS_DIR` used to launch the runs.
+2. Run `labctl queue SLOT --first ID [ID ...]` and check that the resulting order starts with those waiting IDs in the requested order. The move preserves IDs and downstream waits. Admitted runs keep their slot, and legacy waiters follow their original lock order.
+3. When submitting jobs for shortest-first ordering, pass `--estimate MINUTES` with `--slot SLOT`. Account for setup and verification time in addition to the main command. Use one slot for jobs that require exclusive access to the same GPU.
 
 ## Writing the brief
 The brief is a Markdown file; the experimenter treats it as its authority and checks exactly what it lists, nothing more. The quality of the monitoring is decided here, so be concrete: name files, fields, values, line patterns and counts, not "outputs look right". Build the sanity checks from the implementer's report of what the job writes and when. Include:
