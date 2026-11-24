@@ -141,7 +141,10 @@ turns, not one each, and a message stays small however many there are. Messages 
 holds the session lock while a human is in the conversation; wakes queue
 until they leave. Codex is the exception: attach only waits for a running
 turn, and wakes that arrive while you are in the conversation go into it
-with `codex queue`. An exit wake queued this way asks the experimenter to
+with `codex queue`. When a local Codex manager is in an active turn, labctl
+waits for that turn to end and sends the run's accumulated wakes together.
+If labctl cannot see the local turn, it queues the wakes immediately. An exit
+wake queued into the experimenter's conversation asks the experimenter to
 send its verdict with `labctl report`; if none was sent when you leave,
 attach runs one headless turn to get it. Open codex sessions through
 `labctl attach`, not `codex resume`, or that follow-up does not happen.

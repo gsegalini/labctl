@@ -7,6 +7,7 @@
 """
 
 import fcntl
+import json
 import os
 import re
 import shlex
@@ -20,6 +21,7 @@ from pathlib import Path
 from labctl import harness, install, runs, wake
 
 HARNESS_TIMEOUT = 1800  # seconds per harness command; LABCTL_HARNESS_TIMEOUT overrides
+CODEX_TURN_POLL = 1.0
 
 
 def new_sessions(experimenter: str | None, manager: str | None) -> dict:
@@ -178,6 +180,64 @@ def deliver_turn(run_dir: Path, seq: int, pending_fd: int | None = None) -> None
         _turn(run_dir, role, rec, pending, last_seq=events[-1]["seq"])
 
 
+def _codex_turn_event(line: bytes) -> str | None:
+    markers = ("task_started", "task_complete", "turn_aborted")
+    if not any(marker.encode() in line for marker in markers):
+        return None
+    try:
+        item = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(item, dict) and item.get("type") == "event_msg" and isinstance(item.get("payload"), dict):
+        kind = item["payload"].get("type")
+        return kind if kind in markers else None
+    return None
+
+
+def _wait_for_codex_turn(session_id: str) -> bool:
+    """Wait for the active turn in a local Codex rollout. Return whether we waited."""
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    # Session names are accepted by Codex, but only UUIDs identify a rollout here.
+    try:
+        thread_id = str(uuid.UUID(session_id))
+    except ValueError:
+        return False
+    try:
+        path = next((home / "sessions").glob(f"*/*/*/rollout-*-{thread_id}.jsonl"), None)
+        if path is None:
+            return False
+        with path.open("rb") as f:
+            end = f.seek(0, os.SEEK_END)
+            pos, prefix, kind = end, b"", None
+            complete_end = None
+            while pos and kind is None:
+                start = max(0, pos - 65536)
+                f.seek(start)
+                chunk = f.read(pos - start) + prefix
+                prefix, *lines = chunk.split(b"\n")
+                if complete_end is None and lines:
+                    complete_end = start + len(chunk) - len(lines.pop())
+                if not start:
+                    lines.insert(0, prefix)
+                kind = next((event for line in reversed(lines) if (event := _codex_turn_event(line))), None)
+                pos = start
+            if kind != "task_started" or complete_end is None:
+                return False
+            f.seek(complete_end)
+            deadline = time.monotonic() + float(os.environ.get("LABCTL_HARNESS_TIMEOUT", HARNESS_TIMEOUT))
+            while time.monotonic() < deadline:
+                offset = f.tell()
+                line = f.readline()
+                if not line.endswith(b"\n"):
+                    f.seek(offset)
+                    time.sleep(min(CODEX_TURN_POLL, max(0, deadline - time.monotonic())))
+                elif _codex_turn_event(line) in ("task_complete", "turn_aborted"):
+                    break
+            return True
+    except OSError:
+        return False  # an unavailable rollout leaves the ordinary Codex queue path in place
+
+
 def _message(run_dir: Path, pending: list[dict]) -> str:
     """Each event's wake, with the matches of one pattern collapsed into one wake at its last
     match, so a burst cannot grow the message; the log tail only once, after the last wake."""
@@ -232,6 +292,19 @@ def _turn(run_dir: Path, role: str, rec: dict, pending: list[dict], last_seq: in
                                                         session_id=sid, effort=rec.get("effort"), in_git=in_git), cwd)
         elif r is None:
             r = _run(run_dir, role, seqs, resume(), cwd)
+            if h == "codex" and r.returncode and "already has an active writer" in r.stderr:
+                if role == "manager" and _wait_for_codex_turn(sid):
+                    # The session lock is still held. Fold in wakes that arrived during the turn;
+                    # their detached waiters will see the advanced cursor when they acquire it.
+                    after = pending[-1]["seq"]
+                    pending += [e for e in runs.read_events(run_dir)
+                                if e["seq"] > after and wake.route(run_dir, e) == role]
+                    seqs = ",".join(str(e["seq"]) for e in pending)
+                    message = _message(run_dir, pending)
+                    with open(run_dir / "wake.log", "a") as f:
+                        f.write(f"== {runs.now()} seq={seqs} role={role} batching Codex wakes\n")
+                    update(run_dir, role, delivered=pending[-1]["seq"])
+                    r = _run(run_dir, role, seqs, resume(), cwd)
             if h == "codex" and r.returncode and "already has an active writer" in r.stderr:
                 # a person has the session open: queue the wake into their conversation
                 if role == "experimenter" and exits:

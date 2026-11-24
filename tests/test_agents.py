@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import threading
@@ -192,6 +193,51 @@ def test_codex_active_writer_falls_back_to_queue(root, tmp_path, fake_agents, mo
     assert resume["argv"][:3] == ["codex", "exec", "resume"]
     assert queue["argv"][:4] == ["codex", "queue", "--thread", "thr-1"]
     assert queue["prompt"].startswith("[labctl wake] source=supervisor")
+    assert not [e for e in runs.read_events(d) if e["event"] == "delivery_failed"]
+
+
+def test_codex_manager_batches_wakes_until_the_open_turn_finishes(root, tmp_path, fake_agents, monkeypatch):
+    sid = "00000000-0000-4000-8000-000000000001"
+    monkeypatch.setenv("FAKE_MODE", "busy")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    rollout = tmp_path / "sessions" / "2026" / "11" / "24" / f"rollout-test-{sid}.jsonl"
+    rollout.parent.mkdir(parents=True)
+
+    def record_turn(kind):
+        with rollout.open("a") as f:
+            f.write(json.dumps({"type": "event_msg", "payload": {"type": kind}}) + "\n")
+
+    record_turn("task_started")
+    # Put the turn start beyond one read block, as in a long tool-heavy turn.
+    with rollout.open("a") as f:
+        f.write(json.dumps({"type": "response_item", "payload": "x" * 70_000}) + "\n")
+    d = run_with(root, tmp_path, manager=f"codex:{sid}")
+    first = ev(d, "match", pattern="progress", line="first")
+    later = iter([
+        ("match", {"pattern": "progress", "line": "second"}),
+        ("match", {"pattern": "progress", "line": "third"}),
+        ("exit", {"code": 0, "check": None}),
+    ])
+    received = []
+
+    def during_turn(_seconds):
+        assert [call["argv"][1] for call in fake_agents()] == ["exec"]
+        event = next(later, None)
+        if event is None:
+            record_turn("task_complete")
+        else:
+            kind, fields = event
+            received.append(ev(d, kind, **fields))
+
+    monkeypatch.setattr(agents.time, "sleep", during_turn)
+    agents.deliver_turn(d, first["seq"])
+    for e in received:
+        agents.deliver_turn(d, e["seq"])
+    resume, retry, queue = fake_agents()
+    assert [call["argv"][1] for call in (resume, retry, queue)] == ["exec", "exec", "queue"]
+    assert "matched 3 times (seq 1-3)" in queue["prompt"]
+    assert "event=exit code=0 check=none seq=4 " in queue["prompt"]
+    assert agents.load(d)["manager"]["delivered"] == 4
     assert not [e for e in runs.read_events(d) if e["event"] == "delivery_failed"]
 
 
